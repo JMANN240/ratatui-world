@@ -1,22 +1,22 @@
 use std::f64::consts::PI;
 
-use glam::{DMat4, DQuat, DVec3};
+use glam::{DMat4, DQuat, DVec3, Vec3Swizzles};
+use rand::random_bool;
+use ratatui_canvas_polygon::triangle::Triangle;
+use ratatui_widgets::canvas::Context;
+
+use crate::world::{Renderer, World};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera {
     position: DVec3,
     theta: f64,
     phi: f64,
-    projection_matrix: DMat4
+    projection_matrix: DMat4,
 }
 
 impl Camera {
-    pub fn new(
-        position: DVec3,
-        theta: f64,
-        phi: f64,
-    projection_matrix: DMat4
-    ) -> Self {
+    pub fn new(position: DVec3, theta: f64, phi: f64, projection_matrix: DMat4) -> Self {
         Self {
             position,
             theta,
@@ -58,7 +58,7 @@ impl Camera {
     }
 
     pub fn quaternion(&self) -> DQuat {
-        self.phi_quaternion() * self.theta_quaternion()
+        self.theta_quaternion() * self.phi_quaternion()
     }
 
     pub fn facing(&self) -> DVec3 {
@@ -74,7 +74,9 @@ impl Camera {
     }
 
     pub fn transform_world_point(&self, world_point: DVec3) -> DVec3 {
-        self.transformation_matrix().inverse().transform_point3(world_point)
+        self.transformation_matrix()
+            .inverse()
+            .transform_point3(world_point)
     }
 
     pub fn projection_matrix(&self) -> DMat4 {
@@ -101,6 +103,55 @@ impl Default for Camera {
             theta: f64::default(),
             phi: f64::default(),
             projection_matrix: DMat4::perspective_infinite_rh(PI / 2.0, 1.0, 0.1),
+        }
+    }
+}
+
+impl Renderer for Camera {
+    fn render(&self, world: &World, context: &mut Context, _width: usize, _height: usize) {
+        for shape in world.shapes() {
+            let mut sorted_faces = shape.faces().clone();
+            sorted_faces.sort_by_key(|face| {
+                (self
+                    .transform_world_point(*face.points()[0])
+                    .midpoint(self.transform_world_point(*face.points()[1]))
+                    .midpoint(self.transform_world_point(*face.points()[2]))
+                    .length()
+                    * 1000.0) as i32
+            });
+            sorted_faces.reverse();
+
+            for face in sorted_faces {
+                let midpoint = self
+                    .transform_world_point(*face.points()[0])
+                    .midpoint(self.transform_world_point(*face.points()[1]))
+                    .midpoint(self.transform_world_point(*face.points()[2]));
+
+                let chance = if Camera::should_clip(self.project_camera_point(midpoint)) {
+                    0.0
+                } else {
+                    (midpoint.length() / 10.0).clamp(0.0, 1.0) * -1.0 + 1.0
+                };
+
+                context.draw(&Triangle::new(
+                    [
+                        self.transform_and_project_world_point((*face.points()[0]).clone())
+                            .xy()
+                            .to_array()
+                            .into(),
+                        self.transform_and_project_world_point((*face.points()[1]).clone())
+                            .xy()
+                            .to_array()
+                            .into(),
+                        self.transform_and_project_world_point((*face.points()[2]).clone())
+                            .xy()
+                            .to_array()
+                            .into(),
+                    ],
+                    face.color(),
+                    Some(Box::new(move |_, _| random_bool(chance.powi(2)))),
+                ));
+            }
         }
     }
 }
@@ -148,11 +199,23 @@ mod tests {
     fn test_project() {
         let camera = Camera::default();
 
-        assert!(Camera::should_clip(camera.transform_and_project_world_point(DVec3::X)));
-        assert!(Camera::should_clip(camera.transform_and_project_world_point(DVec3::NEG_X)));
-        assert!(Camera::should_clip(camera.transform_and_project_world_point(DVec3::Y)));
-        assert!(Camera::should_clip(camera.transform_and_project_world_point(DVec3::NEG_Y)));
-        assert!(Camera::should_clip(camera.transform_and_project_world_point(DVec3::Z)));
-        assert!(!Camera::should_clip(camera.transform_and_project_world_point(DVec3::NEG_Z)));
+        assert!(Camera::should_clip(
+            camera.transform_and_project_world_point(DVec3::X)
+        ));
+        assert!(Camera::should_clip(
+            camera.transform_and_project_world_point(DVec3::NEG_X)
+        ));
+        assert!(Camera::should_clip(
+            camera.transform_and_project_world_point(DVec3::Y)
+        ));
+        assert!(Camera::should_clip(
+            camera.transform_and_project_world_point(DVec3::NEG_Y)
+        ));
+        assert!(Camera::should_clip(
+            camera.transform_and_project_world_point(DVec3::Z)
+        ));
+        assert!(!Camera::should_clip(
+            camera.transform_and_project_world_point(DVec3::NEG_Z)
+        ));
     }
 }

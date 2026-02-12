@@ -15,7 +15,7 @@ use ratatui::{
         Block, Widget,
     },
 };
-use ratatui_world::{World, camera::Camera, shape::Shape3D};
+use ratatui_world::{world::World, camera::Camera, shape::Shape3D};
 
 fn main() -> std::io::Result<()> {
     ratatui::run(|terminal| App::default().run(terminal))
@@ -94,7 +94,7 @@ impl Widget for &App {
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
-        World::new(self.camera, 10.0)
+        World::new(Box::new(self.camera), 10.0)
             .block(block)
             .add_shape(Shape3D::triangular_pyramid(self.t))
             .render(area, buf);

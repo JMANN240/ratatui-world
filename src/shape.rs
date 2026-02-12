@@ -1,150 +1,94 @@
-use std::{f64::consts::TAU, ops::Sub, rc::Rc};
+use std::{f64::consts::TAU, ops::Sub, process::exit, rc::Rc};
 
 use glam::{DAffine3, DVec3, dvec3};
+use gltf::{Document, Gltf, Semantic, buffer::Data, import_buffers, mesh::Mode};
 use ratatui_core::style::Color;
 use stl::BinaryStlFile;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Shape3D {
-    points: Vec<Rc<DVec3>>,
-    faces: Vec<Face>,
+    triangles: Vec<Triangle>,
 }
 
 impl Shape3D {
-    pub fn from_stl(stl: BinaryStlFile, transform: DAffine3) -> Self {
-        let transformed_triangles = stl
-            .triangles
-            .iter()
-            .map(|triangle| {
-                [
-                    transform.transform_point3(dvec3(
-                        triangle.v1[0] as f64,
-                        triangle.v1[1] as f64,
-                        triangle.v1[2] as f64,
-                    )),
-                    transform.transform_point3(dvec3(
-                        triangle.v2[0] as f64,
-                        triangle.v2[1] as f64,
-                        triangle.v2[2] as f64,
-                    )),
-                    transform.transform_point3(dvec3(
-                        triangle.v3[0] as f64,
-                        triangle.v3[1] as f64,
-                        triangle.v3[2] as f64,
-                    )),
-                ]
-            })
-            .collect::<Vec<[DVec3; 3]>>();
+    pub fn from_gltf(document: Document, buffers: Vec<Data>, transform: DAffine3) -> Self {
+        let mut points = vec![];
+        let mut triangles = vec![];
 
-        let points = transformed_triangles
-            .iter()
-            .flatten()
-            .copied()
-            .map(|point| Rc::new(point))
-            .collect::<Vec<Rc<DVec3>>>();
+        if let Some(scene) = document.default_scene() {
+            for node in scene.nodes() {
+                let transform = node.transform();
+                let (translation, rotation, scale) = transform.decomposed();
 
-        let faces = transformed_triangles
-            .iter()
-            .map(|triangle| {
-                let point_1 = Rc::clone(
-                    points
-                        .iter()
-                        .find(|point| (point.sub(triangle[0])).length() < 0.01)
-                        .unwrap(),
-                );
+                if let Some(mesh) = node.mesh() {
+                    for primitive in mesh.primitives() {
+                        // Only handle triangle lists in this example.
+                        if primitive.mode() != Mode::Triangles {
+                            continue;
+                        }
 
-                let point_2 = Rc::clone(
-                    points
-                        .iter()
-                        .find(|point| (point.sub(triangle[1])).length() < 0.01)
-                        .unwrap(),
-                );
+                        let color_f32 = primitive.material().pbr_metallic_roughness().base_color_factor();
+                        let color = Color::Rgb((color_f32[0] * 255.0) as u8, (color_f32[1] * 255.0) as u8, (color_f32[2] * 255.0) as u8);
 
-                let point_3 = Rc::clone(
-                    points
-                        .iter()
-                        .find(|point| (point.sub(triangle[2])).length() < 0.01)
-                        .unwrap(),
-                );
+                        let reader = primitive.reader(|b| Some(&buffers[b.index()]));
 
-                Face::new([point_1, point_2, point_3], Color::White)
-            })
-            .collect::<Vec<Face>>();
+                        // Record base index before pushing this primitive's vertices.
+                        let base = points.len() as u32;
 
-        Self { points, faces }
+                        // Positions
+                        let Some(positions) = reader.read_positions() else {
+                            continue;
+                        };
+                        for p in positions {
+                            let v = DVec3::new(p[0] as f64 + translation[0] as f64, p[1] as f64 + translation[1] as f64, p[2] as f64 + translation[2] as f64);
+                            points.push(v);
+                        }
+
+                        // Indices (faces)
+                        if let Some(indices) = reader.read_indices() {
+                            let idx: Vec<u32> = indices.into_u32().collect();
+                            for tri in idx.chunks_exact(3) {
+                                triangles.push(Triangle::new(
+                                    [
+                                        points[(base + tri[0]) as usize],
+                                        points[(base + tri[1]) as usize],
+                                        points[(base + tri[2]) as usize],
+                                    ],
+                                    color,
+                                ));
+                            }
+                        }
+
+                        if let Some(colors) = reader.read_colors(16) {
+                            for color in colors.into_rgb_u8() {
+                                println!("{:?}", color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self { triangles }
     }
 
-    pub fn triangular_pyramid(t: f64) -> Self {
-        let points = vec![
-            Rc::new(dvec3(t.cos(), -1.0, -10.0 + t.sin())),
-            Rc::new(dvec3(
-                (t + TAU / 3.0).cos(),
-                -1.0,
-                -10.0 + (t + TAU / 3.0).sin(),
-            )),
-            Rc::new(dvec3(
-                (t + TAU * 2.0 / 3.0).cos(),
-                -1.0,
-                -10.0 + (t + TAU * 2.0 / 3.0).sin(),
-            )),
-            Rc::new(dvec3(0.0, 1.0, -10.0)),
-        ];
-
-        let faces = vec![
-            Face::new(
-                [
-                    Rc::clone(&points[0]),
-                    Rc::clone(&points[1]),
-                    Rc::clone(&points[2]),
-                ],
-                Color::Red,
-            ),
-            Face::new(
-                [
-                    Rc::clone(&points[0]),
-                    Rc::clone(&points[1]),
-                    Rc::clone(&points[3]),
-                ],
-                Color::Green,
-            ),
-            Face::new(
-                [
-                    Rc::clone(&points[0]),
-                    Rc::clone(&points[2]),
-                    Rc::clone(&points[3]),
-                ],
-                Color::Blue,
-            ),
-            Face::new(
-                [
-                    Rc::clone(&points[1]),
-                    Rc::clone(&points[2]),
-                    Rc::clone(&points[3]),
-                ],
-                Color::White,
-            ),
-        ];
-
-        Self { points, faces }
-    }
-
-    pub fn faces(&self) -> &Vec<Face> {
-        &self.faces
+    pub fn triangles(&self) -> &Vec<Triangle> {
+        &self.triangles
     }
 }
 
-#[derive(Clone)]
-pub struct Face {
-    points: [Rc<DVec3>; 3],
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Triangle {
+    points: [DVec3; 3],
     color: Color,
 }
 
-impl Face {
-    pub fn new(points: [Rc<DVec3>; 3], color: Color) -> Self {
+impl Triangle {
+    pub fn new(points: [DVec3; 3], color: Color) -> Self {
         Self { points, color }
     }
 
-    pub fn points(&self) -> &[Rc<DVec3>; 3] {
+    pub fn points(&self) -> &[DVec3; 3] {
         &self.points
     }
 
