@@ -1,17 +1,18 @@
-use std::{f64::consts::TAU, ops::Sub, process::exit, rc::Rc};
-
-use glam::{DAffine3, DVec3, dvec3};
-use gltf::{Document, Gltf, Semantic, buffer::Data, import_buffers, mesh::Mode};
+use glam::{Affine3, Vec3};
+use gltf::{Document, buffer::Data, mesh::Mode};
+use lib::triangle::Triangle;
 use ratatui_core::style::Color;
-use stl::BinaryStlFile;
+
+use crate::triangle::ColoredTriangle;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shape3D {
-    triangles: Vec<Triangle>,
+    triangles: Vec<ColoredTriangle>,
+    transform: Affine3,
 }
 
 impl Shape3D {
-    pub fn from_gltf(document: Document, buffers: Vec<Data>, transform: DAffine3) -> Self {
+    pub fn from_gltf(document: Document, buffers: Vec<Data>, transform: Affine3) -> Self {
         let mut points = vec![];
         let mut triangles = vec![];
 
@@ -27,8 +28,15 @@ impl Shape3D {
                             continue;
                         }
 
-                        let color_f32 = primitive.material().pbr_metallic_roughness().base_color_factor();
-                        let color = Color::Rgb((color_f32[0] * 255.0) as u8, (color_f32[1] * 255.0) as u8, (color_f32[2] * 255.0) as u8);
+                        let color_f32 = primitive
+                            .material()
+                            .pbr_metallic_roughness()
+                            .base_color_factor();
+                        let color = Color::Rgb(
+                            (color_f32[0] * 255.0) as u8,
+                            (color_f32[1] * 255.0) as u8,
+                            (color_f32[2] * 255.0) as u8,
+                        );
 
                         let reader = primitive.reader(|b| Some(&buffers[b.index()]));
 
@@ -40,7 +48,11 @@ impl Shape3D {
                             continue;
                         };
                         for p in positions {
-                            let v = DVec3::new(p[0] as f64 + translation[0] as f64, p[1] as f64 + translation[1] as f64, p[2] as f64 + translation[2] as f64);
+                            let v = Vec3::new(
+                                p[0] + translation[0],
+                                p[1] + translation[1],
+                                p[2] + translation[2],
+                            );
                             points.push(v);
                         }
 
@@ -48,12 +60,14 @@ impl Shape3D {
                         if let Some(indices) = reader.read_indices() {
                             let idx: Vec<u32> = indices.into_u32().collect();
                             for tri in idx.chunks_exact(3) {
-                                triangles.push(Triangle::new(
-                                    [
-                                        points[(base + tri[0]) as usize],
-                                        points[(base + tri[1]) as usize],
-                                        points[(base + tri[2]) as usize],
-                                    ],
+                                triangles.push(ColoredTriangle::new(
+                                    Triangle::new(
+                                        [
+                                            points[(base + tri[0]) as usize],
+                                            points[(base + tri[1]) as usize],
+                                            points[(base + tri[2]) as usize],
+                                        ],
+                                    ),
                                     color,
                                 ));
                             }
@@ -69,30 +83,19 @@ impl Shape3D {
             }
         }
 
-        Self { triangles }
+        Self {
+            triangles,
+            transform,
+        }
     }
 
-    pub fn triangles(&self) -> &Vec<Triangle> {
-        &self.triangles
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Triangle {
-    points: [DVec3; 3],
-    color: Color,
-}
-
-impl Triangle {
-    pub fn new(points: [DVec3; 3], color: Color) -> Self {
-        Self { points, color }
+    pub fn set_transform(&mut self, new_transform: Affine3) {
+        self.transform = new_transform;
     }
 
-    pub fn points(&self) -> &[DVec3; 3] {
-        &self.points
-    }
-
-    pub fn color(&self) -> Color {
-        self.color
+    pub fn triangles(&self) -> impl Iterator<Item = ColoredTriangle> {
+        self.triangles
+            .iter()
+            .map(|triangle| triangle.transform(self.transform))
     }
 }

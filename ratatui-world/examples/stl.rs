@@ -1,63 +1,44 @@
 use std::{
-    f64::consts::{PI, TAU},
-    fs::File,
-    process::exit,
-    time::Duration,
+    f32::consts::{PI, TAU}, fs::File, time::Duration
 };
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use glam::{DAffine3, DVec3, dvec3};
-use gltf::{Document, Gltf, buffer::Data};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+};
+use glam::{Affine3, Vec3, vec3};
 use ratatui::{
     DefaultTerminal, Frame,
-    style::Stylize,
+    style::{Stylize},
     symbols::border,
     text::Line,
-    widgets::{Block, Widget},
+    widgets::{
+        Block, Widget,
+    },
 };
-use ratatui_world::{ray_trace::RayTrace, shape::Shape3D, world::World};
-use tracing_subscriber::{Registry, layer::SubscriberExt, util::SubscriberInitExt};
+use ratatui_world::{world::World, camera::Camera, shape::Shape3D};
+use stl::{BinaryStlFile, read_stl};
 
 fn main() -> std::io::Result<()> {
-    let file = File::create("debug.log").unwrap();
+    let stl = read_stl(&mut File::open("monkey.stl").unwrap()).unwrap();
 
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(file) // Direct output to the file
-        .with_ansi(false); // Set the maximum log level for this writer
-
-    Registry::default()
-        .with(file_layer)
-        .init();
-
-    let (document, buffers, _images) = gltf::import("monkey.glb").unwrap();
-
-    ratatui::run(|terminal| App::new(document, buffers).run(terminal))
+    ratatui::run(|terminal| App::new(stl).run(terminal))
 }
 
 pub struct App {
-    t: f64,
-    camera: RayTrace,
+    t: f32,
+    camera: Camera,
     exit: bool,
-    render_depth: f64,
+    stl_shape: Shape3D,
+    render_depth: f32,
 }
 
 impl App {
-    pub fn new(document: Document, buffers: Vec<Data>) -> Self {
+    pub fn new(stl: BinaryStlFile) -> Self {
         Self {
-            t: f64::default(),
-            camera: RayTrace::new(
-                World::new(vec![Shape3D::from_gltf(
-                    document,
-                    buffers,
-                    DAffine3::from_axis_angle(DVec3::Y, -PI / 2.0),
-                )]),
-                1.0,
-                PI / 4.0,
-                DVec3::default(),
-                f64::default(),
-                f64::default(),
-            ),
+            t: f32::default(),
+            camera: Camera::default(),
             exit: bool::default(),
+            stl_shape: Shape3D::from_stl(stl, Affine3::from_axis_angle(Vec3::X, -PI / 2.0)),
             render_depth: 10.0,
         }
     }
@@ -66,7 +47,7 @@ impl App {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
-            self.t += 1.0 / 120.0;
+            self.t += 1.0 / 60.0;
         }
         Ok(())
     }
@@ -76,7 +57,7 @@ impl App {
     }
 
     fn handle_events(&mut self) -> std::io::Result<()> {
-        if event::poll(Duration::from_secs_f64(1.0 / 120.0))? {
+        if event::poll(Duration::from_secs_f64(1.0 / 60.0))? {
             match event::read()? {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                     self.handle_key_event(key_event)
@@ -129,6 +110,9 @@ impl Widget for &App {
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
-        self.camera.render(area, buf);
+        World::new(Box::new(self.camera), self.render_depth)
+            .block(block)
+            .add_shape(self.stl_shape.clone())
+            .render(area, buf);
     }
 }

@@ -1,11 +1,11 @@
 use std::{
-    f64::consts::{PI, TAU}, fs::File, time::Duration
+    f32::consts::TAU, time::Duration
 };
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
 };
-use glam::{DAffine3, DVec3, dvec3};
+use glam::vec3;
 use ratatui::{
     DefaultTerminal, Frame,
     style::{Stylize},
@@ -16,33 +16,19 @@ use ratatui::{
     },
 };
 use ratatui_world::{world::World, camera::Camera, shape::Shape3D};
-use stl::{BinaryStlFile, read_stl};
 
 fn main() -> std::io::Result<()> {
-    let stl = read_stl(&mut File::open("monkey.stl").unwrap()).unwrap();
-
-    ratatui::run(|terminal| App::new(stl).run(terminal))
+    ratatui::run(|terminal| App::default().run(terminal))
 }
 
+#[derive(Debug, Default)]
 pub struct App {
-    t: f64,
+    t: f32,
     camera: Camera,
     exit: bool,
-    stl_shape: Shape3D,
-    render_depth: f64,
 }
 
 impl App {
-    pub fn new(stl: BinaryStlFile) -> Self {
-        Self {
-            t: f64::default(),
-            camera: Camera::default(),
-            exit: bool::default(),
-            stl_shape: Shape3D::from_stl(stl, DAffine3::from_axis_angle(DVec3::X, -PI / 2.0)),
-            render_depth: 10.0,
-        }
-    }
-
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
@@ -70,7 +56,7 @@ impl App {
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
-            KeyCode::Esc => self.exit(),
+            KeyCode::Char('q') => self.exit(),
             KeyCode::Left => self.camera.set_theta(self.camera.theta() + TAU / 12.0),
             KeyCode::Right => self.camera.set_theta(self.camera.theta() - TAU / 12.0),
             KeyCode::Up => self.camera.set_phi(self.camera.phi() + TAU / 24.0),
@@ -87,8 +73,6 @@ impl App {
             KeyCode::Char('d') => self
                 .camera
                 .set_position(self.camera.position() + self.camera.right()),
-            KeyCode::Char('q') => self.render_depth -= 0.5,
-            KeyCode::Char('e') => self.render_depth += 0.5,
             _ => {}
         }
     }
@@ -103,16 +87,16 @@ impl Widget for &App {
     where
         Self: Sized,
     {
-        let title = Line::from(" STL ".bold());
-        let instructions = Line::from(vec![" Quit ".into(), "<ESC> ".blue().bold()]);
+        let title = Line::from(" Movement ".bold());
+        let instructions = Line::from(vec![" Quit ".into(), "<Q> ".blue().bold()]);
         let block = Block::bordered()
             .title(title.centered())
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
-        World::new(Box::new(self.camera), self.render_depth)
+        World::new(Box::new(self.camera), 10.0)
             .block(block)
-            .add_shape(self.stl_shape.clone())
+            .add_shape(Shape3D::triangular_pyramid(self.t))
             .render(area, buf);
     }
 }

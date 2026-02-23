@@ -5,7 +5,7 @@ use std::{
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
 };
-use glam::dvec3;
+use glam::vec3;
 use ratatui::{
     DefaultTerminal, Frame,
     style::{Stylize},
@@ -23,7 +23,7 @@ fn main() -> std::io::Result<()> {
 
 #[derive(Debug, Default)]
 pub struct App {
-    t: f64,
+    t: f32,
     exit: bool,
 }
 

@@ -1,26 +1,18 @@
-[package]
-name = "ratatui-world"
-description = "A 3D world for your 2D terminal"
-license = "MIT OR Apache-2.0"
-version = "0.1.0"
-edition = "2024"
-repository = "https://github.com/JMANN240/ratatui-world"
+[workspace]
+resolver = "3"
+members = ["lib", "ratatui-world", "shader"]
 
-[dependencies]
-chrono = "0.4.43"
-glam = "0.31.0"
-gltf = "1.4.1"
-itertools = "0.14.0"
-rand = "0.9.2"
-ratatui-canvas-polygon = { path = "../ratatui-canvas-polygon" }
-ratatui-core = "0.1.0"
-ratatui-widgets = "0.3.0"
-rayon = "1.11.0"
-stl = "0.2.1"
-tracing = "0.1.44"
-tracing-subscriber = "0.3.22"
+[workspace.dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+glam = { version = "0.31.0" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu.git" }
 
-[dev-dependencies]
-crossterm = "0.29.0"
-rand = "0.9.2"
-ratatui = "0.30.0"
+# Compile build-dependencies in release mode with
+# the same settings as regular dependencies.
+[profile.release.build-override]
+opt-level = 3
+codegen-units = 16
+
+[profile.dev.build-override]
+opt-level = 3
+

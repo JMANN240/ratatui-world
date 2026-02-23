@@ -1,0 +1,567 @@
+use std::{
+    f32::consts::E,
+};
+
+use glam::{Mat4, Quat, Vec3, U16Vec2, vec2, vec3, u16vec2};
+use lib::{moller_trumbore_intersection, plane::Plane};
+use rand::random_bool;
+use ratatui_core::{buffer::Buffer, layout::Rect, style::Color, symbols::Marker, widgets::Widget};
+use ratatui_widgets::canvas::{Canvas, Points};
+use rayon::prelude::*;
+use tracing::debug;
+use wgpu::{Adapter, ComputePipeline, Device, Instance, Queue, ShaderModule};
+
+use crate::{
+    ray::Ray, triangle::ColoredTriangle, world::World
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RayTrace {
+    world: World,
+    aspect_ratio: f32,
+    fov_y: f32,
+    position: Vec3,
+    theta: f32,
+    phi: f32,
+    instance: Instance,
+    adapter: Adapter,
+    device: Device,
+    queue: Queue,
+    shader: ShaderModule,
+    pipeline: ComputePipeline,
+}
+
+impl RayTrace {
+    pub async fn new(
+        world: World,
+        aspect_ratio: f32,
+        fov_y: f32,
+        position: Vec3,
+        theta: f32,
+        phi: f32,
+    ) -> Self {
+        let instance = wgpu::Instance::default();
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .unwrap();
+
+        let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
+
+        let shader = device.create_shader_module(wgpu::include_spirv!(env!("shader.spv")));
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("ratatui world pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: None,
+            compilation_options: Default::default(),
+            cache: Default::default(),
+        });
+
+        Self {
+            world,
+            aspect_ratio,
+            fov_y,
+            position,
+            theta,
+            phi,
+            instance,
+            adapter,
+            device,
+            queue,
+            shader,
+            pipeline,
+        }
+    }
+
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
+    pub fn fov_x(&self) -> f32 {
+        self.fov_y * self.aspect_ratio
+    }
+
+    pub fn untransformed_left_side_vector(&self) -> Vec3 {
+        Vec3::NEG_Z.rotate_y(self.fov_x() / 2.0)
+    }
+
+    pub fn untransformed_right_side_vector(&self) -> Vec3 {
+        Vec3::NEG_Z.rotate_y(-self.fov_x() / 2.0)
+    }
+
+    pub fn untransformed_top_side_vector(&self) -> Vec3 {
+        Vec3::NEG_Z.rotate_x(self.fov_y / 2.0)
+    }
+
+    pub fn untransformed_bottom_side_vector(&self) -> Vec3 {
+        Vec3::NEG_Z.rotate_x(-self.fov_y / 2.0)
+    }
+
+    pub fn left_side_vector(&self) -> Vec3 {
+        self.untransformed_left_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+    }
+
+    pub fn right_side_vector(&self) -> Vec3 {
+        self.untransformed_right_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+    }
+
+    pub fn top_side_vector(&self) -> Vec3 {
+        self.untransformed_top_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+    }
+
+    pub fn bottom_side_vector(&self) -> Vec3 {
+        self.untransformed_bottom_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+    }
+
+    pub fn depth(&self, resolution_y: usize) -> f32 {
+        let scale = (resolution_y as f32 / 2.0) / (self.fov_y / 2.0).sin();
+
+        (self.fov_y / 2.0).cos() * scale
+    }
+
+    pub fn position(&self) -> Vec3 {
+        self.position
+    }
+
+    pub fn set_position(&mut self, position: Vec3) {
+        self.position = position;
+    }
+
+    pub fn theta(&self) -> f32 {
+        self.theta
+    }
+
+    pub fn set_theta(&mut self, theta: f32) {
+        self.theta = theta;
+    }
+
+    pub fn theta_quaternion(&self) -> Quat {
+        Quat::from_axis_angle(Vec3::Y, self.theta())
+    }
+
+    pub fn phi(&self) -> f32 {
+        self.phi
+    }
+
+    pub fn set_phi(&mut self, phi: f32) {
+        self.phi = phi;
+    }
+
+    pub fn phi_quaternion(&self) -> Quat {
+        Quat::from_axis_angle(Vec3::X, self.phi())
+    }
+
+    pub fn quaternion(&self) -> Quat {
+        self.theta_quaternion() * self.phi_quaternion()
+    }
+
+    pub fn facing(&self) -> Vec3 {
+        Vec3::NEG_Z.rotate_x(self.phi()).rotate_y(self.theta())
+    }
+
+    pub fn right(&self) -> Vec3 {
+        self.facing().cross(Vec3::Y).normalize()
+    }
+
+    pub fn transformation_matrix(&self) -> Mat4 {
+        Mat4::from_scale_rotation_translation(Vec3::ONE, self.quaternion(), self.position())
+    }
+
+    pub fn transform_world_point(&self, world_point: Vec3) -> Vec3 {
+        self.transformation_matrix()
+            .inverse()
+            .transform_point3(world_point)
+    }
+
+    pub fn vertical_planes(&self) -> Vec<Plane> {
+        Plane::between_vectors(
+            5,
+            self.position(),
+            self.left_side_vector(),
+            self.right_side_vector(),
+        )
+    }
+
+    pub fn horizontal_planes(&self) -> Vec<Plane> {
+        Plane::between_vectors(
+            5,
+            self.position(),
+            self.bottom_side_vector(),
+            self.top_side_vector(),
+        )
+    }
+}
+
+impl Widget for &RayTrace {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let character_x_resolution = 2; // how many subpixels there are along the width of a character
+        let character_y_resolution = 4; // how many subpixels there are along the height of a character
+
+        // lets say that the canvas is 60 characters wide and 60 characters tall
+
+        let resolution_x = area.width * character_x_resolution; // 60 * 2 = 120 for quadrant
+        let resolution_y = area.height * character_y_resolution; // 60 * 2 = 120 for quadrant
+
+        // so we really have 120 pixels to work with both ways with quadrant
+
+        let cell_aspect_ratio = 1.0 / 2.0;
+
+        // but the characters are twice as tall as they are width, meaning that the whole "square" canvas is actually a rectangle
+
+        let aspect_ratio =
+            cell_aspect_ratio * character_y_resolution as f32 / character_x_resolution as f32;
+
+        // So we get the aspect ratio of each pixel
+
+        // 0.5 * 1 / 1 = 0.5 in the case of a block
+        // 0.5 * 2 / 2 = 0.5 in the case of a quadrant
+        // 0.5 * 4 / 2 = 1.0 in the case of braille
+
+        let width = resolution_x as f32; // The space on the screen is as wide as there are pixels. 120 for quadrant
+        let height = (resolution_y as f32) / aspect_ratio; // The space on the screen is as tall as there are pixels divided by the AR. 120 / 0.5 = 240 for quadrant
+
+        let cell_spacing_x = width / (area.width as f32); // For quadrant it is 120 / 60 = 2, so each cell should be 2 apart width-wise
+        let cell_spacing_y = height / (area.height as f32); // For quadrant it is 240 / 60 = 4, so each cell should be 4 apart height-wise
+
+        let pixel_spacing_x = cell_spacing_x / (character_x_resolution as f32); // For quadrant it is 2 / 2 = 1, so each pixel should be 1 apart width-wise
+        let pixel_spacing_y = cell_spacing_y / (character_y_resolution as f32); // For quadrant it is 4 / 2 = 2, so each pixel should be 2 apart height-wise
+
+        let left = -width / 2.0; // -120 / 2 = -60
+        let right = width / 2.0; // 120 / 2 = 60
+        let up = height / 2.0; // 240 / 2 = 120
+        let down = -height / 2.0; // -240 / 2 = -120
+
+        let screen = Screen::new(left, right, up, down);
+
+        // eprintln!("WIDTH {width} LEFT {left} RIGHT {right} HEIGHT {height} UP {up} DOWN {down}");
+
+        let depth = self.depth(resolution_y as usize);
+
+        let transformation_matrix = self.transformation_matrix();
+
+        let canvas = Canvas::default()
+            .marker(Marker::Braille)
+            .x_bounds([left as f64, right as f64])
+            .y_bounds([down as f64, up as f64])
+            .paint(|context| {
+                debug!("start");
+                let cells = (0..area.width)
+                    .into_par_iter()
+                    .flat_map(|cell_x_index| {
+                        let ray_x_base =
+                            left + cell_x_index as f32 * cell_spacing_x + pixel_spacing_x / 2.0;
+
+                        // -60 + 0 * 2 + 0.5 = -59.5
+                        // -60 + 1 * 2 + 0.5 = -57.5
+                        // -60 + 2 * 2 + 0.5 = -55.5
+
+                        (0..area.height).into_par_iter().map(move |cell_y_index| {
+                            let ray_y_base =
+                                down + cell_y_index as f32 * cell_spacing_y + pixel_spacing_y / 2.0;
+
+                            // -120 + 0 * 4 + 1 = -119
+                            // -120 + 1 * 4 + 1 = -115
+                            // -120 + 2 * 4 + 1 = -111
+
+                            let mut rays = Vec::new();
+
+                            for ray_x_index in 0..character_x_resolution {
+                                let ray_x_offset = ray_x_index as f32 * pixel_spacing_x;
+
+                                for ray_y_index in 0..character_y_resolution {
+                                    let ray_y_offset = ray_y_index as f32 * pixel_spacing_y;
+
+                                    rays.push(Ray::new(
+                                        transformation_matrix.transform_vector3(vec3(
+                                            ray_x_base + ray_x_offset as f32,
+                                            ray_y_base + ray_y_offset as f32,
+                                            -depth,
+                                        )),
+                                        vec2(
+                                            ray_x_base + ray_x_offset as f32,
+                                            ray_y_base + ray_y_offset as f32,
+                                        ),
+                                    ));
+                                }
+                            }
+
+                            Cell::new(u16vec2(cell_x_index, cell_y_index), rays)
+                        })
+                    })
+                    .collect_vec_list();
+
+                debug!("2");
+                let intersections = cells
+                    .par_iter()
+                    .flatten()
+                    .flat_map(|cell| cell.get_intersections(self, &self.world, &screen))
+                    .collect::<Vec<_>>();
+
+                debug!("3");
+                let mut bools = vec![false; (area.width * area.height) as usize];
+
+                intersections
+                    .par_iter()
+                    .map(|intersection| {
+                        let distance = (self.position() - intersection.intersection()).length();
+                        random_bool(E.powf(-0.01 * distance.powi(2)) as f64)
+                    })
+                    .collect_into_vec(&mut bools);
+
+                debug!("4");
+                for (index, intersection) in intersections.iter().enumerate() {
+                    if *bools.get(index).unwrap_or(&false) {
+                        let distance = (self.position() - intersection.intersection()).length();
+                        let normalized_distance = E.powf(-0.01 * distance.powi(2));
+                        context.draw(&Points::new(
+                            &[(
+                                intersection.ray().screen_vector().x as f64,
+                                intersection.ray().screen_vector().y as f64,
+                            )],
+                            if let Color::Rgb(r, g, b) = intersection.triangle().color() {
+                                Color::Rgb(
+                                    (r as f32 * normalized_distance) as u8,
+                                    (g as f32 * normalized_distance) as u8,
+                                    (b as f32 * normalized_distance) as u8,
+                                )
+                            } else {
+                                intersection.triangle().color()
+                            },
+                        ));
+                    }
+                }
+                debug!("5");
+            });
+
+        canvas.render(area, buf);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cell {
+    coords: U16Vec2,
+    rays: Vec<Ray>,
+}
+
+impl Cell {
+    pub fn new(coords: U16Vec2, rays: Vec<Ray>) -> Self {
+        Self { coords, rays }
+    }
+
+    pub fn get_intersections(
+        &self,
+        ray_trace: &RayTrace,
+        world: &World,
+        screen: &Screen,
+    ) -> Vec<Intersection> {
+        let vertical_planes = ray_trace.vertical_planes();
+        let horizontal_planes = ray_trace.horizontal_planes();
+
+        let triangle_vertical_partition_indices = world
+            .triangles()
+            .par_bridge()
+            .map(|triangle| triangle.partition_indices(&vertical_planes))
+            .collect::<Vec<_>>();
+
+        let triangle_horizontal_partition_indices = world
+            .triangles()
+            .par_bridge()
+            .map(|triangle| triangle.partition_indices(&horizontal_planes))
+            .collect::<Vec<_>>();
+
+        let mut ray_triangle_intersections = self
+            .rays
+            .iter()
+            .filter_map(|ray| {
+                let maybe_ray_vertical_plane_partition_index =
+                    ray.partition_index(&vertical_planes);
+                let maybe_ray_horizontal_plane_partition_index =
+                    ray.partition_index(&horizontal_planes);
+
+                world
+                    .triangles()
+                    .enumerate()
+                    .filter_map(|(index, triangle)| {
+                        let maybe_triangle_vertical_plane_partition_indices =
+                            triangle_vertical_partition_indices.get(index).unwrap();
+                        let maybe_triangle_horizontal_plane_partition_indices =
+                            triangle_horizontal_partition_indices.get(index).unwrap();
+
+                        let ray_might_vertically_intersect_triangle =
+                            maybe_ray_vertical_plane_partition_index.is_none_or(
+                                |ray_vertical_plane_partition_index| {
+                                    maybe_triangle_vertical_plane_partition_indices.is_none_or(
+                                        |(
+                                            lower_triangle_vertical_plane_partition_index,
+                                            upper_triangle_vertical_plane_partition_index,
+                                        )| {
+                                            ray_vertical_plane_partition_index
+                                                >= lower_triangle_vertical_plane_partition_index
+                                                && ray_vertical_plane_partition_index
+                                                    <= upper_triangle_vertical_plane_partition_index
+                                        },
+                                    )
+                                },
+                            );
+
+                        let ray_might_horizontally_intersect_triangle =
+                            maybe_ray_horizontal_plane_partition_index.is_none_or(
+                                |ray_horizontal_plane_partition_index| {
+                                    maybe_triangle_horizontal_plane_partition_indices.is_none_or(
+                                        |(
+                                            lower_triangle_horizontal_plane_partition_index,
+                                            upper_triangle_horizontal_plane_partition_index,
+                                        )| {
+                                            ray_horizontal_plane_partition_index
+                                                >= lower_triangle_horizontal_plane_partition_index
+                                                && ray_horizontal_plane_partition_index
+                                                    <= upper_triangle_horizontal_plane_partition_index
+                                        },
+                                    )
+                                },
+                            );
+
+                        let ray_might_intersect_triangle = ray_might_vertically_intersect_triangle && ray_might_horizontally_intersect_triangle;
+
+                        if ray_might_intersect_triangle {
+                            moller_trumbore_intersection(
+                                ray_trace.position(),
+                                ray.world_vector(),
+                                *triangle.points(),
+                            )
+                            .map(|intersection| Intersection {
+                                ray: *ray,
+                                triangle,
+                                intersection,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .min_by(|l, r| {
+                        (ray_trace.position() - l.intersection())
+                            .length()
+                            .partial_cmp(&(ray_trace.position() - r.intersection()).length())
+                            .unwrap()
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        ray_triangle_intersections.sort_by(|l, r| {
+            (ray_trace.position() - r.intersection())
+                .length()
+                .partial_cmp(&(ray_trace.position() - l.intersection()).length())
+                .unwrap()
+        });
+
+        ray_triangle_intersections
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Intersection {
+    ray: Ray,
+    triangle: ColoredTriangle,
+    intersection: Vec3,
+}
+
+impl Intersection {
+    pub fn ray(&self) -> Ray {
+        self.ray
+    }
+
+    pub fn triangle(&self) -> ColoredTriangle {
+        self.triangle
+    }
+
+    pub fn intersection(&self) -> Vec3 {
+        self.intersection
+    }
+}
+
+pub struct Screen {
+    left: f32,
+    right: f32,
+    up: f32,
+    down: f32,
+    width: f32,
+    height: f32,
+}
+
+impl Screen {
+    pub fn new(left: f32, right: f32, up: f32, down: f32) -> Self {
+        Screen {
+            left,
+            right,
+            up,
+            down,
+            width: right - left,
+            height: up - down,
+        }
+    }
+
+    pub fn left(&self) -> f32 {
+        self.left
+    }
+
+    pub fn right(&self) -> f32 {
+        self.right
+    }
+
+    pub fn up(&self) -> f32 {
+        self.up
+    }
+
+    pub fn down(&self) -> f32 {
+        self.down
+    }
+
+    pub fn width(&self) -> f32 {
+        self.width
+    }
+
+    pub fn height(&self) -> f32 {
+        self.height
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_moller_trumbore() {
+        let position = Vec3::ZERO;
+        let direction = Vec3::NEG_Z;
+        let triangle = [
+            vec3(-1.0, -1.0, -2.0),
+            vec3(0.0, 1.0, -2.0),
+            vec3(1.0, -1.0, -2.0),
+        ];
+
+        assert_eq!(
+            moller_trumbore_intersection(position, direction, triangle),
+            Some(vec3(0.0, 0.0, -2.0))
+        );
+
+        let position = vec3(0.0, 0.0, 10.0);
+
+        assert_eq!(
+            moller_trumbore_intersection(position, direction, triangle),
+            Some(vec3(0.0, 0.0, -2.0))
+        );
+
+        let position = vec3(0.0, 0.0, -10.0);
+
+        assert_eq!(
+            moller_trumbore_intersection(position, direction, triangle),
+            None
+        );
+    }
+}
