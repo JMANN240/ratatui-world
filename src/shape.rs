@@ -12,6 +12,13 @@ pub struct Shape3D {
 }
 
 impl Shape3D {
+    pub fn new(
+        triangles: Vec<ColoredTriangle>,
+        transform: Affine3,
+    ) -> Self {
+        Self { triangles, transform }
+    }
+
     pub fn from_gltf(document: Document, buffers: Vec<Data>, transform: Affine3) -> Self {
         let mut points = vec![];
         let mut triangles = vec![];

@@ -1,76 +1,195 @@
-use glam::vec2;
+use std::{
+    collections::HashMap,
+    f32::consts::{PI, TAU},
+    fs::File,
+    process::exit,
+    time::Duration,
+};
 
-fn main() {
-    let character_x_resolution = 2; // how many subpixels there are along the width of a character
-    let character_y_resolution = 4; // how many subpixels there are along the height of a character
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use glam::{Affine3, Quat, Vec3, vec3};
+use gltf::{Document, Gltf, buffer::Data};
+use ratatui::{
+    DefaultTerminal, Frame,
+    style::{Color, Stylize},
+    symbols::border,
+    text::Line,
+    widgets::{Block, Widget},
+};
+use ratatui_world::{
+    ray_trace::RayTrace,
+    shape::Shape3D,
+    triangle::{ColoredTriangle, Triangle},
+    world::World,
+};
+use tracing_subscriber::{Registry, layer::SubscriberExt, util::SubscriberInitExt};
 
-    // lets say that the canvas is 60 characters wide and 60 characters tall
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let file = File::create("debug.log").unwrap();
 
-    let resolution_x = 60 * character_x_resolution; // 60 * 2 = 120 for quadrant
-    let resolution_y = 60 * character_y_resolution; // 60 * 2 = 120 for quadrant
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(file) // Direct output to the file
+        .with_ansi(false); // Set the maximum log level for this writer
 
-    // so we really have 120 pixels to work with both ways with quadrant
+    Registry::default().with(file_layer).init();
 
-    let cell_aspect_ratio = 1.0 / 2.0;
+    let mut app = App::new().await;
 
-    // but the characters are twice as tall as they are width, meaning that the whole "square" canvas is actually a rectangle
+    ratatui::run(|terminal| app.run(terminal))
+}
 
-    let aspect_ratio =
-        cell_aspect_ratio * character_y_resolution as f32 / character_x_resolution as f32;
+pub struct App {
+    t: f32,
+    camera: RayTrace,
+    exit: bool,
+    render_depth: f32,
+}
 
-    // So we get the aspect ratio of each pixel
+impl App {
+    pub async fn new() -> Self {
+        let mut shapes = HashMap::new();
 
-    // 0.5 * 1 / 1 = 0.5 in the case of a block
-    // 0.5 * 2 / 2 = 0.5 in the case of a quadrant
-    // 0.5 * 4 / 2 = 1.0 in the case of braille
+        let (monkey_document, monkey_buffers, _monkey_images) = gltf::import("monkey.glb").unwrap();
+        let (room_document, room_buffers, _room_images) = gltf::import("room.glb").unwrap();
 
-    let width = (resolution_x as f32); // The space on the screen is as wide as there are pixels. 120 for quadrant
-    let height = (resolution_y as f32) / aspect_ratio; // The space on the screen is as tall as there are pixels divided by the AR. 120 / 0.5 = 240 for quadrant
+        let monkey = Shape3D::from_gltf(
+            monkey_document,
+            monkey_buffers,
+            Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::NEG_Z * 4.0),
+        );
 
-    let cell_spacing_x = width / (60 as f32); // For quadrant it is 120 / 60 = 2, so each cell should be 2 apart width-wise
-    let cell_spacing_y = height / (60 as f32); // For quadrant it is 240 / 60 = 4, so each cell should be 4 apart height-wise
+        let room = Shape3D::from_gltf(
+            room_document,
+            room_buffers,
+            Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::ZERO),
+        );
 
-    let pixel_spacing_x = cell_spacing_x / (character_x_resolution as f32); // For quadrant it is 2 / 2 = 1, so each pixel should be 1 apart width-wise
-    let pixel_spacing_y = cell_spacing_y / (character_y_resolution as f32); // For quadrant it is 4 / 2 = 2, so each pixel should be 2 apart height-wise
+        let test = Shape3D::new(
+            vec![
+                ColoredTriangle::new(
+                    Triangle::new([
+                        vec3(-1.0, -1.0, -10.0),
+                        vec3(100.0, 0.0, -10.0),
+                        vec3(0.0, 100.0, -10.0),
+                    ]),
+                    Color::Rgb(255, 255, 255),
+                ),
+                ColoredTriangle::new(
+                    Triangle::new([
+                        vec3(-1.0, -1.0, 10.0),
+                        vec3(100.0, 0.0, 10.0),
+                        vec3(0.0, 100.0, 10.0),
+                    ]),
+                    Color::Rgb(255, 255, 255),
+                ),
+            ],
+            Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::ZERO),
+        );
 
-    let left = -width / 2.0; // -120 / 2 = -60
-    let right = width / 2.0; // 120 / 2 = 60
-    let up = height / 2.0; // 240 / 2 = 120
-    let down = -height / 2.0; // -240 / 2 = -120
+        shapes.insert(String::from("monkey"), monkey);
+        shapes.insert(String::from("room"), room);
+        // shapes.insert(String::from("test"), test);
 
-    let cells = (0..60)
-        .flat_map(|cell_x_index| {
-            let ray_x_base = left + cell_x_index as f32 * cell_spacing_x + pixel_spacing_x / 2.0;
+        let world = World::new(shapes);
 
-            // -60 + 0 * 2 + 0.5 = -59.5
-            // -60 + 1 * 2 + 0.5 = -57.5
-            // -60 + 2 * 2 + 0.5 = -55.5
+        Self {
+            t: f32::default(),
+            camera: RayTrace::new(
+                world,
+                1.0,
+                PI / 4.0,
+                Vec3::default(),
+                f32::default(),
+                f32::default(),
+            )
+            .await,
+            exit: bool::default(),
+            render_depth: 10.0,
+        }
+    }
 
-            (0..60).map(move |cell_y_index| {
-                let ray_y_base =
-                    down + cell_y_index as f32 * cell_spacing_y + pixel_spacing_y / 2.0;
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        while !self.exit {
+            self.camera.first_render = (self.t % 1.0) < 0.01;
+            terminal.draw(|frame| self.draw(frame))?;
+            self.handle_events()?;
+            self.t += 1.0 / 120.0;
+        }
+        Ok(())
+    }
 
-                // -120 + 0 * 4 + 1 = -119
-                // -120 + 1 * 4 + 1 = -115
-                // -120 + 2 * 4 + 1 = -111
+    fn draw(&self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+    }
 
-                // eprintln!("{ray_y_base}");
-
-                for ray_x_index in 0..character_x_resolution {
-                    let ray_x_offset = ray_x_index as f32 * pixel_spacing_x;
-
-                    for ray_y_index in 0..character_y_resolution {
-                        let ray_y_offset = ray_y_index as f32 * pixel_spacing_y;
-
-                        println!("{:?}",
-                                vec2(
-                                    ray_x_base + ray_x_offset as f32,
-                                    ray_y_base + ray_y_offset as f32,
-                                ),
-                        );
-                    }
+    fn handle_events(&mut self) -> std::io::Result<()> {
+        if event::poll(Duration::from_secs_f64(1.0 / 120.0))? {
+            match event::read()? {
+                Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                    self.handle_key_event(key_event)
                 }
-            })
-        })
-        .collect::<Vec<()>>();
+                _ => {}
+            };
+        }
+
+        let world = self.camera.world_mut();
+
+        world
+            .shapes_mut()
+            .entry(String::from("monkey"))
+            .and_modify(|shape| {
+                shape.set_transform(Affine3::from_rotation_translation(
+                    Quat::from_rotation_y(self.t * 4.0),
+                    Vec3::NEG_Z * 4.0 + 0.1 * Vec3::Y * (self.t * 7.0).sin(),
+                ))
+            });
+
+        Ok(())
+    }
+
+    fn handle_key_event(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Esc => self.exit(),
+            KeyCode::Left => self.camera.set_theta(self.camera.theta() + TAU / 120.0),
+            KeyCode::Right => self.camera.set_theta(self.camera.theta() - TAU / 120.0),
+            KeyCode::Up => self.camera.set_phi(self.camera.phi() + TAU / 240.0),
+            KeyCode::Down => self.camera.set_phi(self.camera.phi() - TAU / 240.0),
+            KeyCode::Char('w') => self
+                .camera
+                .set_position(self.camera.position() + self.camera.facing()),
+            KeyCode::Char('a') => self
+                .camera
+                .set_position(self.camera.position() - self.camera.right()),
+            KeyCode::Char('s') => self
+                .camera
+                .set_position(self.camera.position() - self.camera.facing()),
+            KeyCode::Char('d') => self
+                .camera
+                .set_position(self.camera.position() + self.camera.right()),
+            KeyCode::Char('q') => self.render_depth -= 0.5,
+            KeyCode::Char('e') => self.render_depth += 0.5,
+            _ => {}
+        }
+    }
+
+    fn exit(&mut self) {
+        self.exit = true;
+    }
+}
+
+impl Widget for &App {
+    fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
+    where
+        Self: Sized,
+    {
+        let title = Line::from(" STL ".bold());
+        let instructions = Line::from(vec![" Quit ".into(), "<ESC> ".blue().bold()]);
+        let block = Block::bordered()
+            .title(title.centered())
+            .title_bottom(instructions.centered())
+            .border_set(border::THICK);
+
+        self.camera.render(area, buf);
+    }
 }

@@ -3,7 +3,7 @@ use std::f32::consts::E;
 use crate::{moller_trumbore_intersection, plane::Plane};
 use bytemuck::{Pod, Zeroable};
 use flume::bounded;
-use glam::{Mat4, Quat, U16Vec2, Vec3, Vec3A, u16vec2, vec2, vec3, vec3a};
+use glam::{Mat4, Quat, U16Vec2, Vec3, Vec3A, Vec4, u16vec2, vec2, vec3, vec3a};
 use rand::random_bool;
 use ratatui_core::{buffer::Buffer, layout::Rect, style::Color, symbols::Marker, widgets::Widget};
 use ratatui_widgets::canvas::{Canvas, Points};
@@ -30,6 +30,7 @@ pub struct RayTrace {
     queue: Queue,
     shader: ShaderModule,
     pipeline: ComputePipeline,
+    pub first_render: bool,
 }
 
 impl RayTrace {
@@ -74,6 +75,7 @@ impl RayTrace {
             queue,
             shader,
             pipeline,
+            first_render: true,
         }
     }
 
@@ -246,13 +248,10 @@ impl Widget for &RayTrace {
         let up = height / 2.0; // 240 / 2 = 120
         let down = -height / 2.0; // -240 / 2 = -120
 
-        let screen = Screen::new(left, right, up, down);
-
-        // eprintln!("WIDTH {width} LEFT {left} RIGHT {right} HEIGHT {height} UP {up} DOWN {down}");
-
         let depth = self.depth(resolution_y as usize);
 
-        let transformation_matrix = self.transformation_matrix();
+        let transformation_matrix =
+            Mat4::from_scale_rotation_translation(Vec3::ONE, self.quaternion(), Vec3::ZERO);
 
         let params = Params {
             width: resolution_x as u32,
@@ -269,6 +268,7 @@ impl Widget for &RayTrace {
             position: self.position(),
             theta: self.theta(),
             phi: self.phi(),
+            _pad: Vec3::ZERO,
         };
 
         let camera_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
@@ -278,6 +278,7 @@ impl Widget for &RayTrace {
         });
 
         let mut rays_data = vec![];
+        let mut screen_vecs = vec![];
 
         for cell_y_index in 0..area.height {
             let ray_y_base = down + cell_y_index as f32 * cell_spacing_y + pixel_spacing_y / 2.0;
@@ -292,11 +293,14 @@ impl Widget for &RayTrace {
                     for ray_x_index in 0..character_x_resolution {
                         let ray_x_offset = ray_x_index as f32 * pixel_spacing_x;
 
-                        rays_data.push(transformation_matrix.transform_vector3(vec3(
-                            ray_x_base + ray_x_offset as f32,
-                            ray_y_base + ray_y_offset as f32,
-                            -depth,
-                        )));
+                        let ray_x = ray_x_base + ray_x_offset as f32;
+                        let ray_y = ray_y_base + ray_y_offset as f32;
+
+                        rays_data.push(
+                            transformation_matrix.transform_vector3a(vec3a(ray_x, ray_y, -depth)),
+                        );
+
+                        screen_vecs.push(vec2(ray_x, ray_y));
                     }
                 }
             }
@@ -311,8 +315,14 @@ impl Widget for &RayTrace {
         let triangles_data = self
             .world
             .triangles()
-            .map(|colored_triangle| Triangle {
-                points: *colored_triangle.points(),
+            .filter_map(|colored_triangle| {
+                if let Color::Rgb(r, g, b) = colored_triangle.color() {
+                    Some(Triangle {
+                        points: colored_triangle.points().map(Vec3::to_vec3a),
+                    })
+                } else {
+                    None
+                }
             })
             .collect::<Vec<_>>();
 
@@ -324,14 +334,14 @@ impl Widget for &RayTrace {
 
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("output"),
-            size: rays_buffer.size(),
+            size: rays_buffer.size() / 3,
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
         let temp_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("temp"),
-            size: rays_buffer.size(),
+            size: rays_buffer.size() / 3,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -391,7 +401,9 @@ impl Widget for &RayTrace {
 
             // The callback we submitted to map async will only get called after the
             // device is polled or the queue submitted
-            self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            self.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
 
             // We check if the mapping was successful here
             rx.recv().unwrap().unwrap();
@@ -400,106 +412,44 @@ impl Widget for &RayTrace {
             let output_data = temp_buffer.get_mapped_range(..);
 
             let distances: &[f32] = bytemuck::cast_slice(&output_data);
+
+            let canvas = Canvas::default()
+                .marker(Marker::Braille)
+                .x_bounds([left as f64, right as f64])
+                .y_bounds([down as f64, up as f64])
+                .paint(|context| {
+                    for (index, (distance, screen_vec)) in
+                        distances.iter().zip(screen_vecs.iter()).enumerate()
+                    {
+                        let normalized_distance = E.powf(-0.01 * distance.powi(2));
+
+                        if random_bool(normalized_distance as f64) {
+                            context.draw(&Points::new(
+                                &[(screen_vec.x as f64, screen_vec.y as f64)],
+                                // if let Color::Rgb(r, g, b) = intersection.triangle().color() {
+                                //     Color::Rgb(
+                                //         (r as f32 * normalized_distance) as u8,
+                                //         (g as f32 * normalized_distance) as u8,
+                                //         (b as f32 * normalized_distance) as u8,
+                                //     )
+                                // } else {
+                                //     intersection.triangle().color()
+                                // },
+                                Color::Rgb(
+                                    (255.0 * normalized_distance) as u8,
+                                    (255.0 * normalized_distance) as u8,
+                                    (255.0 * normalized_distance) as u8,
+                                ),
+                            ));
+                        }
+                    }
+                });
+
+            canvas.render(area, buf);
         }
 
         // We need to unmap the buffer to be able to use it again
         temp_buffer.unmap();
-
-        let canvas = Canvas::default()
-            .marker(Marker::Braille)
-            .x_bounds([left as f64, right as f64])
-            .y_bounds([down as f64, up as f64])
-            .paint(|context| {
-                debug!("start");
-                let cells = (0..area.width)
-                    .into_par_iter()
-                    .flat_map(|cell_x_index| {
-                        let ray_x_base =
-                            left + cell_x_index as f32 * cell_spacing_x + pixel_spacing_x / 2.0;
-
-                        // -60 + 0 * 2 + 0.5 = -59.5
-                        // -60 + 1 * 2 + 0.5 = -57.5
-                        // -60 + 2 * 2 + 0.5 = -55.5
-
-                        (0..area.height).into_par_iter().map(move |cell_y_index| {
-                            let ray_y_base =
-                                down + cell_y_index as f32 * cell_spacing_y + pixel_spacing_y / 2.0;
-
-                            // -120 + 0 * 4 + 1 = -119
-                            // -120 + 1 * 4 + 1 = -115
-                            // -120 + 2 * 4 + 1 = -111
-
-                            let mut rays = Vec::new();
-
-                            for ray_x_index in 0..character_x_resolution {
-                                let ray_x_offset = ray_x_index as f32 * pixel_spacing_x;
-
-                                for ray_y_index in 0..character_y_resolution {
-                                    let ray_y_offset = ray_y_index as f32 * pixel_spacing_y;
-
-                                    rays.push(Ray::new(
-                                        transformation_matrix.transform_vector3(vec3(
-                                            ray_x_base + ray_x_offset as f32,
-                                            ray_y_base + ray_y_offset as f32,
-                                            -depth,
-                                        )),
-                                        vec2(
-                                            ray_x_base + ray_x_offset as f32,
-                                            ray_y_base + ray_y_offset as f32,
-                                        ),
-                                    ));
-                                }
-                            }
-
-                            Cell::new(u16vec2(cell_x_index, cell_y_index), rays)
-                        })
-                    })
-                    .collect_vec_list();
-
-                debug!("2");
-                let intersections = cells
-                    .par_iter()
-                    .flatten()
-                    .flat_map(|cell| cell.get_intersections(self, &self.world, &screen))
-                    .collect::<Vec<_>>();
-
-                debug!("3");
-                let mut bools = vec![false; (area.width * area.height) as usize];
-
-                intersections
-                    .par_iter()
-                    .map(|intersection| {
-                        let distance = (self.position() - intersection.intersection()).length();
-                        random_bool(E.powf(-0.01 * distance.powi(2)) as f64)
-                    })
-                    .collect_into_vec(&mut bools);
-
-                debug!("4");
-                for (index, intersection) in intersections.iter().enumerate() {
-                    if *bools.get(index).unwrap_or(&false) {
-                        let distance = (self.position() - intersection.intersection()).length();
-                        let normalized_distance = E.powf(-0.01 * distance.powi(2));
-                        context.draw(&Points::new(
-                            &[(
-                                intersection.ray().screen_vector().x as f64,
-                                intersection.ray().screen_vector().y as f64,
-                            )],
-                            if let Color::Rgb(r, g, b) = intersection.triangle().color() {
-                                Color::Rgb(
-                                    (r as f32 * normalized_distance) as u8,
-                                    (g as f32 * normalized_distance) as u8,
-                                    (b as f32 * normalized_distance) as u8,
-                                )
-                            } else {
-                                intersection.triangle().color()
-                            },
-                        ));
-                    }
-                }
-                debug!("5");
-            });
-
-        canvas.render(area, buf);
     }
 }
 
@@ -516,12 +466,13 @@ pub struct Camera {
     pub position: Vec3,
     pub theta: f32,
     pub phi: f32,
+    _pad: Vec3,
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct Triangle {
-    pub points: [Vec3; 3],
+    pub points: [Vec3A; 3],
 }
 
 #[derive(Debug, Clone, PartialEq)]

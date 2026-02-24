@@ -84,6 +84,7 @@ impl App {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.exit {
+            self.camera.first_render = (self.t % 1.0) < 0.01;
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
             self.t += 1.0 / 120.0;
@@ -118,10 +119,10 @@ impl App {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => self.exit(),
-            KeyCode::Left => self.camera.set_theta(self.camera.theta() + TAU / 12.0),
-            KeyCode::Right => self.camera.set_theta(self.camera.theta() - TAU / 12.0),
-            KeyCode::Up => self.camera.set_phi(self.camera.phi() + TAU / 24.0),
-            KeyCode::Down => self.camera.set_phi(self.camera.phi() - TAU / 24.0),
+            KeyCode::Left => self.camera.set_theta(self.camera.theta() + TAU / 120.0),
+            KeyCode::Right => self.camera.set_theta(self.camera.theta() - TAU / 120.0),
+            KeyCode::Up => self.camera.set_phi(self.camera.phi() + TAU / 240.0),
+            KeyCode::Down => self.camera.set_phi(self.camera.phi() - TAU / 240.0),
             KeyCode::Char('w') => self
                 .camera
                 .set_position(self.camera.position() + self.camera.facing()),
