@@ -1,9 +1,11 @@
-#![cfg_attr(target_arch = "spirv", no_std)]
-
-use spirv_std::glam::Vec3;
+use glam::Vec3;
 
 pub mod plane;
+pub mod ray;
+pub mod ray_trace;
+pub mod shape;
 pub mod triangle;
+pub mod world;
 
 // https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm#Rust_implementation
 pub fn moller_trumbore_intersection(

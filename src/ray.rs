@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
-use lib::plane::{Plane, partition_index};
+use crate::plane::{Plane, partition_index};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]

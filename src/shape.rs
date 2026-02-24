@@ -1,6 +1,6 @@
 use glam::{Affine3, Vec3};
 use gltf::{Document, buffer::Data, mesh::Mode};
-use lib::triangle::Triangle;
+use crate::triangle::Triangle;
 use ratatui_core::style::Color;
 
 use crate::triangle::ColoredTriangle;

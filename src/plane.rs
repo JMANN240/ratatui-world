@@ -1,8 +1,6 @@
-use bytemuck::{Pod, Zeroable};
-use spirv_std::glam::Vec3;
+use glam::Vec3;
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Plane {
     a: f32,
     b: f32,
@@ -15,7 +13,6 @@ impl Plane {
         Self { a, b, c, d }
     }
 
-    #[cfg(not(target_arch = "spirv"))]
     pub fn between_vectors(n: usize, point: Vec3, v1: Vec3, v2: Vec3) -> Vec<Self> {
         let angle = v1.angle_between(v2);
         let cross = v1.cross(v2);

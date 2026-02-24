@@ -1,19 +1,20 @@
-use std::{
-    f32::consts::E,
-};
+use std::f32::consts::E;
 
-use glam::{Mat4, Quat, Vec3, U16Vec2, vec2, vec3, u16vec2};
-use lib::{moller_trumbore_intersection, plane::Plane};
+use crate::{moller_trumbore_intersection, plane::Plane};
+use bytemuck::{Pod, Zeroable};
+use flume::bounded;
+use glam::{Mat4, Quat, U16Vec2, Vec3, Vec3A, u16vec2, vec2, vec3, vec3a};
 use rand::random_bool;
 use ratatui_core::{buffer::Buffer, layout::Rect, style::Color, symbols::Marker, widgets::Widget};
 use ratatui_widgets::canvas::{Canvas, Points};
 use rayon::prelude::*;
 use tracing::debug;
-use wgpu::{Adapter, ComputePipeline, Device, Instance, Queue, ShaderModule};
-
-use crate::{
-    ray::Ray, triangle::ColoredTriangle, world::World
+use wgpu::{
+    Adapter, ComputePipeline, Device, Instance, Queue, ShaderModule,
+    util::{BufferInitDescriptor, DeviceExt},
 };
+
+use crate::{ray::Ray, triangle::ColoredTriangle, world::World};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RayTrace {
@@ -49,7 +50,7 @@ impl RayTrace {
 
         let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
 
-        let shader = device.create_shader_module(wgpu::include_spirv!(env!("shader.spv")));
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("ratatui world pipeline"),
@@ -101,19 +102,27 @@ impl RayTrace {
     }
 
     pub fn left_side_vector(&self) -> Vec3 {
-        self.untransformed_left_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+        self.untransformed_left_side_vector()
+            .rotate_x(self.phi())
+            .rotate_y(self.theta())
     }
 
     pub fn right_side_vector(&self) -> Vec3 {
-        self.untransformed_right_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+        self.untransformed_right_side_vector()
+            .rotate_x(self.phi())
+            .rotate_y(self.theta())
     }
 
     pub fn top_side_vector(&self) -> Vec3 {
-        self.untransformed_top_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+        self.untransformed_top_side_vector()
+            .rotate_x(self.phi())
+            .rotate_y(self.theta())
     }
 
     pub fn bottom_side_vector(&self) -> Vec3 {
-        self.untransformed_bottom_side_vector().rotate_x(self.phi()).rotate_y(self.theta())
+        self.untransformed_bottom_side_vector()
+            .rotate_x(self.phi())
+            .rotate_y(self.theta())
     }
 
     pub fn depth(&self, resolution_y: usize) -> f32 {
@@ -245,6 +254,157 @@ impl Widget for &RayTrace {
 
         let transformation_matrix = self.transformation_matrix();
 
+        let params = Params {
+            width: resolution_x as u32,
+            height: resolution_y as u32,
+        };
+
+        let params_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("params buffer"),
+            contents: bytemuck::cast_slice(&[params]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera = Camera {
+            position: self.position(),
+            theta: self.theta(),
+            phi: self.phi(),
+        };
+
+        let camera_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("camera buffer"),
+            contents: bytemuck::cast_slice(&[camera]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let mut rays_data = vec![];
+
+        for cell_y_index in 0..area.height {
+            let ray_y_base = down + cell_y_index as f32 * cell_spacing_y + pixel_spacing_y / 2.0;
+
+            for ray_y_index in 0..character_y_resolution {
+                let ray_y_offset = ray_y_index as f32 * pixel_spacing_y;
+
+                for cell_x_index in 0..area.width {
+                    let ray_x_base =
+                        left + cell_x_index as f32 * cell_spacing_x + pixel_spacing_x / 2.0;
+
+                    for ray_x_index in 0..character_x_resolution {
+                        let ray_x_offset = ray_x_index as f32 * pixel_spacing_x;
+
+                        rays_data.push(transformation_matrix.transform_vector3(vec3(
+                            ray_x_base + ray_x_offset as f32,
+                            ray_y_base + ray_y_offset as f32,
+                            -depth,
+                        )));
+                    }
+                }
+            }
+        }
+
+        let rays_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("rays"),
+            contents: bytemuck::cast_slice(&rays_data),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+        });
+
+        let triangles_data = self
+            .world
+            .triangles()
+            .map(|colored_triangle| Triangle {
+                points: *colored_triangle.points(),
+            })
+            .collect::<Vec<_>>();
+
+        let triangles_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("triangles"),
+            contents: bytemuck::cast_slice(&triangles_data),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+        });
+
+        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("output"),
+            size: rays_buffer.size(),
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let temp_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("temp"),
+            size: rays_buffer.size(),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: rays_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: triangles_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: output_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+
+        {
+            let num_x_dispatches = resolution_x.div_ceil(16) as u32;
+            let num_y_dispatches = resolution_y.div_ceil(16) as u32;
+
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(num_x_dispatches, num_y_dispatches, 1);
+        }
+
+        encoder.copy_buffer_to_buffer(&output_buffer, 0, &temp_buffer, 0, output_buffer.size());
+
+        self.queue.submit([encoder.finish()]);
+
+        {
+            // The mapping process is async, so we'll need to create a channel to get
+            // the success flag for our mapping
+            let (tx, rx) = bounded(1);
+
+            // We send the success or failure of our mapping via a callback
+            temp_buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+                tx.send(result).unwrap()
+            });
+
+            // The callback we submitted to map async will only get called after the
+            // device is polled or the queue submitted
+            self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+            // We check if the mapping was successful here
+            rx.recv().unwrap().unwrap();
+
+            // We then get the bytes that were stored in the buffer
+            let output_data = temp_buffer.get_mapped_range(..);
+
+            let distances: &[f32] = bytemuck::cast_slice(&output_data);
+        }
+
+        // We need to unmap the buffer to be able to use it again
+        temp_buffer.unmap();
+
         let canvas = Canvas::default()
             .marker(Marker::Braille)
             .x_bounds([left as f64, right as f64])
@@ -341,6 +501,27 @@ impl Widget for &RayTrace {
 
         canvas.render(area, buf);
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct Params {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct Camera {
+    pub position: Vec3,
+    pub theta: f32,
+    pub phi: f32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct Triangle {
+    pub points: [Vec3; 3],
 }
 
 #[derive(Debug, Clone, PartialEq)]
