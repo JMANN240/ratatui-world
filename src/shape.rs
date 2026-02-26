@@ -105,4 +105,9 @@ impl Shape3D {
             .iter()
             .map(|triangle| triangle.transform(self.transform))
     }
+
+    pub fn triangles_mut(&mut self) -> impl Iterator<Item = &mut ColoredTriangle> {
+        self.triangles
+            .iter_mut()
+    }
 }

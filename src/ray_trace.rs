@@ -1,7 +1,9 @@
 use std::f32::consts::E;
 
 use crate::{moller_trumbore_intersection, plane::Plane};
+use bvh::bvh::Bvh;
 use bytemuck::{Pod, Zeroable};
+use chrono::Utc;
 use flume::bounded;
 use glam::{Mat4, Quat, U16Vec2, Vec3, Vec3A, Vec4, u16vec2, vec2, vec3, vec3a};
 use rand::random_bool;
@@ -16,7 +18,7 @@ use wgpu::{
 
 use crate::{ray::Ray, triangle::ColoredTriangle, world::World};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct RayTrace {
     world: World,
     aspect_ratio: f32,
@@ -30,12 +32,13 @@ pub struct RayTrace {
     queue: Queue,
     shader: ShaderModule,
     pipeline: ComputePipeline,
+    pub bvh: Bvh<f32, 3>,
     pub first_render: bool,
 }
 
 impl RayTrace {
     pub async fn new(
-        world: World,
+        mut world: World,
         aspect_ratio: f32,
         fov_y: f32,
         position: Vec3,
@@ -62,6 +65,13 @@ impl RayTrace {
             cache: Default::default(),
         });
 
+        let mut shapes = world
+            .triangles_mut()
+            .map(|triangle| triangle.inner_mut())
+            .collect::<Vec<_>>();
+
+        let bvh = Bvh::build(shapes.as_mut_slice());
+
         Self {
             world,
             aspect_ratio,
@@ -75,6 +85,7 @@ impl RayTrace {
             queue,
             shader,
             pipeline,
+            bvh,
             first_render: true,
         }
     }
@@ -211,6 +222,7 @@ impl Widget for &RayTrace {
     where
         Self: Sized,
     {
+        debug!("start {:?}", Utc::now());
         let character_x_resolution = 2; // how many subpixels there are along the width of a character
         let character_y_resolution = 4; // how many subpixels there are along the height of a character
 
@@ -253,6 +265,7 @@ impl Widget for &RayTrace {
         let transformation_matrix =
             Mat4::from_scale_rotation_translation(Vec3::ONE, self.quaternion(), Vec3::ZERO);
 
+        debug!("start buffer stuff {:?}", Utc::now());
         let params = Params {
             width: resolution_x as u32,
             height: resolution_y as u32,
@@ -264,6 +277,7 @@ impl Widget for &RayTrace {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        debug!("params made {:?}", Utc::now());
         let camera = Camera {
             position: self.position(),
             theta: self.theta(),
@@ -277,6 +291,7 @@ impl Widget for &RayTrace {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        debug!("camera made {:?}", Utc::now());
         let mut rays_data = vec![];
         let mut screen_vecs = vec![];
 
@@ -312,6 +327,25 @@ impl Widget for &RayTrace {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
         });
 
+        debug!("rays made {:?}", Utc::now());
+
+        let flat_bvh = self.bvh.flatten().into_iter().map(|node| FlatBVHNode {
+            aabb: AABB {
+                min: vec3a(node.aabb.min.x, node.aabb.min.y, node.aabb.min.z),
+                max: vec3a(node.aabb.max.x, node.aabb.max.y, node.aabb.max.z),
+            },
+            entry_index: node.entry_index,
+            exit_index: node.exit_index,
+            shape_index: node.shape_index,
+            _pad: 0,
+        }).collect::<Vec<_>>();
+
+        let bvh_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("bvh"),
+            contents: bytemuck::cast_slice(&flat_bvh),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+        });
+
         let triangles_data = self
             .world
             .triangles()
@@ -319,6 +353,12 @@ impl Widget for &RayTrace {
                 if let Color::Rgb(r, g, b) = colored_triangle.color() {
                     Some(Triangle {
                         points: colored_triangle.points().map(Vec3::to_vec3a),
+                        color: Rgb {
+                            red: r as u32,
+                            green: g as u32,
+                            blue: b as u32,
+                        },
+                        _pad: 0,
                     })
                 } else {
                     None
@@ -332,20 +372,24 @@ impl Widget for &RayTrace {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
         });
 
+        debug!("truiangles made {:?}", Utc::now());
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("output"),
-            size: rays_buffer.size() / 3,
+            size: rays_data.len() as u64 * 16,
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
+        debug!("output made {:?}", Utc::now());
         let temp_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("temp"),
-            size: rays_buffer.size() / 3,
+            size: rays_data.len() as u64 * 16,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
 
+        debug!("temp made {:?}", Utc::now());
+        debug!("start bind group {:?}", Utc::now());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -364,17 +408,23 @@ impl Widget for &RayTrace {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: triangles_buffer.as_entire_binding(),
+                    resource: bvh_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
+                    resource: triangles_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
                     resource: output_buffer.as_entire_binding(),
                 },
             ],
         });
 
+        debug!("start encoder {:?}", Utc::now());
         let mut encoder = self.device.create_command_encoder(&Default::default());
 
+        debug!("dispatch {:?}", Utc::now());
         {
             let num_x_dispatches = resolution_x.div_ceil(16) as u32;
             let num_y_dispatches = resolution_y.div_ceil(16) as u32;
@@ -384,68 +434,76 @@ impl Widget for &RayTrace {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(num_x_dispatches, num_y_dispatches, 1);
         }
+        debug!("done? {:?}", Utc::now());
 
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &temp_buffer, 0, output_buffer.size());
+        debug!("copied {:?}", Utc::now());
 
         self.queue.submit([encoder.finish()]);
+        debug!("submitted {:?}", Utc::now());
 
+        self.queue.on_submitted_work_done(|| {
+            debug!("on_submitted_work_done {:?}", Utc::now());
+        });
+
+        debug!("mapping {:?}", Utc::now());
         {
             // The mapping process is async, so we'll need to create a channel to get
             // the success flag for our mapping
             let (tx, rx) = bounded(1);
 
+            debug!("mapping2 {:?}", Utc::now());
             // We send the success or failure of our mapping via a callback
             temp_buffer.map_async(wgpu::MapMode::Read, .., move |result| {
                 tx.send(result).unwrap()
             });
 
+            debug!("mapping3 {:?}", Utc::now());
             // The callback we submitted to map async will only get called after the
             // device is polled or the queue submitted
             self.device
                 .poll(wgpu::PollType::wait_indefinitely())
                 .unwrap();
 
+            debug!("mapping4 {:?}", Utc::now());
             // We check if the mapping was successful here
             rx.recv().unwrap().unwrap();
 
+            debug!("mapping5 {:?}", Utc::now());
             // We then get the bytes that were stored in the buffer
             let output_data = temp_buffer.get_mapped_range(..);
 
-            let distances: &[f32] = bytemuck::cast_slice(&output_data);
+            debug!("mapping6 {:?}", Utc::now());
+            let intersections: &[DumbIntersection] = bytemuck::cast_slice(&output_data);
+
+            debug!("mapped {:?}", Utc::now());
 
             let canvas = Canvas::default()
                 .marker(Marker::Braille)
                 .x_bounds([left as f64, right as f64])
                 .y_bounds([down as f64, up as f64])
                 .paint(|context| {
-                    for (index, (distance, screen_vec)) in
-                        distances.iter().zip(screen_vecs.iter()).enumerate()
+                    for (index, (intersection, screen_vec)) in
+                        intersections.iter().zip(screen_vecs.iter()).enumerate()
                     {
-                        let normalized_distance = E.powf(-0.01 * distance.powi(2));
+                        let normalized_distance = E.powf(-0.01 * intersection.distance.powi(2));
 
                         if random_bool(normalized_distance as f64) {
                             context.draw(&Points::new(
                                 &[(screen_vec.x as f64, screen_vec.y as f64)],
-                                // if let Color::Rgb(r, g, b) = intersection.triangle().color() {
-                                //     Color::Rgb(
-                                //         (r as f32 * normalized_distance) as u8,
-                                //         (g as f32 * normalized_distance) as u8,
-                                //         (b as f32 * normalized_distance) as u8,
-                                //     )
-                                // } else {
-                                //     intersection.triangle().color()
-                                // },
                                 Color::Rgb(
-                                    (255.0 * normalized_distance) as u8,
-                                    (255.0 * normalized_distance) as u8,
-                                    (255.0 * normalized_distance) as u8,
+                                    (intersection.color.red as f32 * normalized_distance) as u8,
+                                    (intersection.color.green as f32 * normalized_distance) as u8,
+                                    (intersection.color.blue as f32 * normalized_distance) as u8,
                                 ),
                             ));
                         }
                     }
                 });
 
+            debug!("drawn {:?}", Utc::now());
             canvas.render(area, buf);
+            debug!("rendered {:?}", Utc::now());
         }
 
         // We need to unmap the buffer to be able to use it again
@@ -471,8 +529,42 @@ pub struct Camera {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct Rgb {
+    pub red: u32,
+    pub green: u32,
+    pub blue: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct Triangle {
     pub points: [Vec3A; 3],
+    pub color: Rgb,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct DumbIntersection {
+    distance: f32,
+    color: Rgb,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct AABB {
+    min: Vec3A,
+    max: Vec3A,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+pub struct FlatBVHNode {
+    aabb: AABB,
+    entry_index: u32,
+    exit_index: u32,
+    shape_index: u32,
+    _pad: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

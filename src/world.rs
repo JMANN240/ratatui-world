@@ -9,9 +9,7 @@ pub struct World {
 
 impl World {
     pub fn new(shapes: HashMap<String, Shape3D>) -> Self {
-        Self {
-            shapes,
-        }
+        Self { shapes }
     }
 
     pub fn shapes(&self) -> &HashMap<String, Shape3D> {
@@ -23,6 +21,14 @@ impl World {
     }
 
     pub fn triangles(&self) -> impl Iterator<Item = ColoredTriangle> {
-        self.shapes().iter().flat_map(|(_name, shape)| shape.triangles())
+        self.shapes()
+            .iter()
+            .flat_map(|(_name, shape)| shape.triangles())
+    }
+
+    pub fn triangles_mut(&mut self) -> impl Iterator<Item = &mut ColoredTriangle> {
+        self.shapes_mut()
+            .iter_mut()
+            .flat_map(|(_name, shape)| shape.triangles_mut())
     }
 }

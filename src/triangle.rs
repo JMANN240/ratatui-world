@@ -1,4 +1,9 @@
+use bvh::{
+    aabb::{Aabb, Bounded},
+    bounding_hierarchy::BHShape,
+};
 use glam::{Affine3, Vec3};
+use nalgebra::Point3;
 use ratatui_core::style::Color;
 
 use crate::plane::{Plane, partition_index};
@@ -6,11 +11,15 @@ use crate::plane::{Plane, partition_index};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Triangle {
     points: [Vec3; 3],
+    node_index: usize,
 }
 
 impl Triangle {
     pub fn new(points: [Vec3; 3]) -> Self {
-        Self { points }
+        Self {
+            points,
+            node_index: 0,
+        }
     }
 
     pub fn points(&self) -> &[Vec3; 3] {
@@ -22,31 +31,81 @@ impl Triangle {
     }
 
     pub fn transform(&self, transform: Affine3) -> Triangle {
-        Self::new(
-            [
-                transform.transform_point3(self.points[0]),
-                transform.transform_point3(self.points[1]),
-                transform.transform_point3(self.points[2]),
-            ]
-        )
+        Self::new([
+            transform.transform_point3(self.points[0]),
+            transform.transform_point3(self.points[1]),
+            transform.transform_point3(self.points[2]),
+        ])
     }
 
-    pub fn partition_indices(&self, planes: &[Plane]) -> Option<(usize, usize)> {
-        let partition_indices = self
-            .points()
-            .iter()
-            .map(|point| partition_index(planes, *point))
-            .collect::<Option<Vec<usize>>>()?;
+    pub fn min_x(&self) -> Option<f32> {
+        self.points()
+            .map(|point| point.x)
+            .into_iter()
+            .min_by(|l, r| l.partial_cmp(r).unwrap())
+    }
 
-        let Some(min) = partition_indices.iter().min() else {
-            return None;
-        };
+    pub fn max_x(&self) -> Option<f32> {
+        self.points()
+            .map(|point| point.x)
+            .into_iter()
+            .max_by(|l, r| l.partial_cmp(r).unwrap())
+    }
 
-        let Some(max) = partition_indices.iter().max() else {
-            return None;
-        };
+    pub fn min_y(&self) -> Option<f32> {
+        self.points()
+            .map(|point| point.y)
+            .into_iter()
+            .min_by(|l, r| l.partial_cmp(r).unwrap())
+    }
 
-        Some((*min, *max))
+    pub fn max_y(&self) -> Option<f32> {
+        self.points()
+            .map(|point| point.y)
+            .into_iter()
+            .max_by(|l, r| l.partial_cmp(r).unwrap())
+    }
+
+    pub fn min_z(&self) -> Option<f32> {
+        self.points()
+            .map(|point| point.z)
+            .into_iter()
+            .min_by(|l, r| l.partial_cmp(r).unwrap())
+    }
+
+    pub fn max_z(&self) -> Option<f32> {
+        self.points()
+            .map(|point| point.z)
+            .into_iter()
+            .max_by(|l, r| l.partial_cmp(r).unwrap())
+    }
+}
+
+impl Bounded<f32, 3> for Triangle {
+    fn aabb(&self) -> Aabb<f32, 3> {
+        let min = Point3::new(
+            self.min_x().unwrap(),
+            self.min_y().unwrap(),
+            self.min_z().unwrap(),
+        );
+
+        let max = Point3::new(
+            self.max_x().unwrap(),
+            self.max_y().unwrap(),
+            self.max_z().unwrap(),
+        );
+
+        Aabb::with_bounds(min, max)
+    }
+}
+
+impl BHShape<f32, 3> for Triangle {
+    fn set_bh_node_index(&mut self, index: usize) {
+        self.node_index = index;
+    }
+
+    fn bh_node_index(&self) -> usize {
+        self.node_index
     }
 }
 
@@ -59,6 +118,14 @@ pub struct ColoredTriangle {
 impl ColoredTriangle {
     pub fn new(triangle: Triangle, color: Color) -> Self {
         Self { triangle, color }
+    }
+
+    pub fn inner(&self) -> Triangle {
+        self.triangle
+    }
+
+    pub fn inner_mut(&mut self) -> &mut Triangle {
+        &mut self.triangle
     }
 
     pub fn points(&self) -> &[Vec3; 3] {
@@ -96,43 +163,5 @@ impl ColoredTriangle {
         };
 
         Some((*min, *max))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_partition_indices() {
-        let triangle = Triangle::new(
-            [
-                Vec3::NEG_X * 0.1 + Vec3::Z,
-                Vec3::NEG_X * 0.1 + Vec3::Y + Vec3::Z,
-                Vec3::X * 0.1 + Vec3::Z,
-            ],
-        );
-
-        let planes =
-            Plane::between_vectors(5, Vec3::ZERO, Vec3::NEG_X + Vec3::Z, Vec3::X + Vec3::Z);
-
-        assert_eq!(triangle.partition_indices(&planes), Some((1, 2)));
-
-        let triangle = Triangle::new(
-            [
-                Vec3::NEG_X + Vec3::NEG_Z,
-                Vec3::NEG_X + Vec3::Z,
-                Vec3::X + Vec3::Z,
-            ],
-        );
-
-        let planes = Plane::between_vectors(
-            5,
-            Vec3::ZERO,
-            Vec3::NEG_Y + Vec3::NEG_Z,
-            Vec3::Y + Vec3::NEG_Z,
-        );
-
-        assert_eq!(triangle.partition_indices(&planes), None)
     }
 }
