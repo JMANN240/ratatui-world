@@ -348,20 +348,16 @@ impl Widget for &RayTrace {
         let triangles_data = self
             .world
             .triangles()
-            .filter_map(|colored_triangle| {
-                if let Color::Rgb(r, g, b) = colored_triangle.color() {
-                    Some(Triangle {
+            .map(|colored_triangle| {
+                    Triangle {
                         points: colored_triangle.points().map(Vec3::to_vec3a),
                         color: Rgb {
-                            red: r as u32,
-                            green: g as u32,
-                            blue: b as u32,
+                            red: colored_triangle.color().r as u32,
+                            green: colored_triangle.color().g as u32,
+                            blue: colored_triangle.color().b as u32,
                         },
                         _pad: 0,
-                    })
-                } else {
-                    None
-                }
+                    }
             })
             .collect::<Vec<_>>();
 

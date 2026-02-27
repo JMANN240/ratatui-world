@@ -1,5 +1,6 @@
 use glam::Vec3;
 
+pub mod color;
 pub mod plane;
 pub mod ray;
 pub mod ray_trace;

@@ -4,9 +4,8 @@ use bvh::{
 };
 use glam::{Affine3, Vec3};
 use nalgebra::Point3;
-use ratatui_core::style::Color;
 
-use crate::plane::{Plane, partition_index};
+use crate::{color::Color, plane::{Plane, partition_index}};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Triangle {

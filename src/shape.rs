@@ -1,7 +1,6 @@
-use crate::triangle::Triangle;
+use crate::{color::Color, triangle::Triangle};
 use glam::{Affine3, Vec3};
 use gltf::{Document, buffer::Data, mesh::Mode};
-use ratatui_core::style::Color;
 
 use crate::triangle::ColoredTriangle;
 
@@ -39,11 +38,11 @@ impl Shape3D {
                             .material()
                             .pbr_metallic_roughness()
                             .base_color_factor();
-                        let color = Color::Rgb(
-                            (color_f32[0] * 255.0) as u8,
-                            (color_f32[1] * 255.0) as u8,
-                            (color_f32[2] * 255.0) as u8,
-                        );
+                        let color = Color {
+                            r: (color_f32[0] * 255.0) as u8,
+                            g: (color_f32[1] * 255.0) as u8,
+                            b: (color_f32[2] * 255.0) as u8,
+                        };
 
                         let reader = primitive.reader(|b| Some(&buffers[b.index()]));
 
