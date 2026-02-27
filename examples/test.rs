@@ -161,8 +161,8 @@ impl App {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => self.exit(),
-            KeyCode::Left => self.camera.set_theta(self.camera.theta() + TAU / 12.0),
-            KeyCode::Right => self.camera.set_theta(self.camera.theta() - TAU / 12.0),
+            KeyCode::Left => self.camera.set_theta(self.camera.theta() + TAU / 24.0),
+            KeyCode::Right => self.camera.set_theta(self.camera.theta() - TAU / 24.0),
             KeyCode::Up => self.camera.set_phi(self.camera.phi() + TAU / 24.0),
             KeyCode::Down => self.camera.set_phi(self.camera.phi() - TAU / 24.0),
             KeyCode::Char('w') => self
