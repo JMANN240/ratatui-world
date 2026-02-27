@@ -2,20 +2,12 @@ use std::{
     collections::HashMap,
     f32::consts::{PI, TAU},
     fs::File,
-    process::exit,
     time::Duration,
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use glam::{Affine3, Quat, Vec3, vec3};
-use gltf::{Document, Gltf, buffer::Data};
-use ratatui::{
-    DefaultTerminal, Frame,
-    style::Stylize,
-    symbols::border,
-    text::Line,
-    widgets::{Block, Widget},
-};
+use glam::{Affine3, Quat, Vec3};
+use ratatui::{DefaultTerminal, Frame, widgets::Widget};
 use ratatui_world::{ray_trace::RayTrace, shape::Shape3D, world::World};
 use tracing_subscriber::{Registry, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -51,11 +43,7 @@ impl App {
         let monkey = Shape3D::from_gltf(
             monkey_document,
             monkey_buffers,
-            Affine3::from_scale_rotation_translation(
-                Vec3::ONE,
-                Quat::IDENTITY,
-                Vec3::NEG_Z * 4.0,
-            ),
+            Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::NEG_Z * 4.0),
         );
 
         let room = Shape3D::from_gltf(
@@ -76,7 +64,8 @@ impl App {
                 Vec3::default(),
                 f32::default(),
                 f32::default(),
-            ).await,
+            )
+            .await,
             exit: bool::default(),
             render_depth: 10.0,
         }
@@ -111,7 +100,12 @@ impl App {
         world
             .shapes_mut()
             .entry(String::from("monkey"))
-            .and_modify(|shape| shape.set_transform(Affine3::from_rotation_translation(Quat::from_rotation_y(self.t * 4.0), Vec3::NEG_Z * 4.0 + 0.1 * Vec3::Y * (self.t * 7.0).sin())));
+            .and_modify(|shape| {
+                shape.set_transform(Affine3::from_rotation_translation(
+                    Quat::from_rotation_y(self.t * 4.0),
+                    Vec3::NEG_Z * 4.0 + 0.1 * Vec3::Y * (self.t * 7.0).sin(),
+                ))
+            });
 
         Ok(())
     }
@@ -151,13 +145,6 @@ impl Widget for &App {
     where
         Self: Sized,
     {
-        let title = Line::from(" STL ".bold());
-        let instructions = Line::from(vec![" Quit ".into(), "<ESC> ".blue().bold()]);
-        let block = Block::bordered()
-            .title(title.centered())
-            .title_bottom(instructions.centered())
-            .border_set(border::THICK);
-
         self.camera.render(area, buf);
     }
 }

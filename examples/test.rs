@@ -2,27 +2,14 @@ use std::{
     collections::HashMap,
     f32::consts::{PI, TAU},
     fs::File,
-    process::exit,
     time::Duration,
 };
 
 use bvh::bvh::Bvh;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use glam::{Affine3, Quat, Vec3, vec3};
-use gltf::{Document, Gltf, buffer::Data};
-use ratatui::{
-    DefaultTerminal, Frame,
-    style::{Color, Stylize},
-    symbols::border,
-    text::Line,
-    widgets::{Block, Widget},
-};
-use ratatui_world::{
-    ray_trace::RayTrace,
-    shape::Shape3D,
-    triangle::{ColoredTriangle, Triangle},
-    world::World,
-};
+use glam::{Affine3, Quat, Vec3};
+use ratatui::{DefaultTerminal, Frame, widgets::Widget};
+use ratatui_world::{ray_trace::RayTrace, shape::Shape3D, world::World};
 use tracing_subscriber::{Registry, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -63,28 +50,6 @@ impl App {
         let room = Shape3D::from_gltf(
             room_document,
             room_buffers,
-            Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::ZERO),
-        );
-
-        let test = Shape3D::new(
-            vec![
-                ColoredTriangle::new(
-                    Triangle::new([
-                        vec3(-1.0, -1.0, -10.0),
-                        vec3(100.0, 0.0, -10.0),
-                        vec3(0.0, 100.0, -10.0),
-                    ]),
-                    Color::Rgb(255, 255, 255),
-                ),
-                ColoredTriangle::new(
-                    Triangle::new([
-                        vec3(-1.0, -1.0, 10.0),
-                        vec3(100.0, 0.0, 10.0),
-                        vec3(0.0, 100.0, 10.0),
-                    ]),
-                    Color::Rgb(255, 255, 255),
-                ),
-            ],
             Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::ZERO),
         );
 
@@ -146,8 +111,6 @@ impl App {
         //         ))
         //     });
 
-            
-
         let mut shapes = world
             .triangles_mut()
             .map(|triangle| triangle.inner_mut())
@@ -193,13 +156,6 @@ impl Widget for &App {
     where
         Self: Sized,
     {
-        let title = Line::from(" STL ".bold());
-        let instructions = Line::from(vec![" Quit ".into(), "<ESC> ".blue().bold()]);
-        let block = Block::bordered()
-            .title(title.centered())
-            .title_bottom(instructions.centered())
-            .border_set(border::THICK);
-
         self.camera.render(area, buf);
     }
 }

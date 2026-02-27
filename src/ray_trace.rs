@@ -5,14 +5,14 @@ use bvh::bvh::Bvh;
 use bytemuck::{Pod, Zeroable};
 use chrono::Utc;
 use flume::bounded;
-use glam::{Mat4, Quat, U16Vec2, Vec3, Vec3A, Vec4, u16vec2, vec2, vec3, vec3a};
+use glam::{Mat4, Quat, U16Vec2, Vec3, Vec3A, vec2, vec3a};
 use rand::random_bool;
 use ratatui_core::{buffer::Buffer, layout::Rect, style::Color, symbols::Marker, widgets::Widget};
 use ratatui_widgets::canvas::{Canvas, Points};
 use rayon::prelude::*;
 use tracing::debug;
 use wgpu::{
-    Adapter, ComputePipeline, Device, Instance, Queue, ShaderModule,
+    ComputePipeline, Device, Queue,
     util::{BufferInitDescriptor, DeviceExt},
 };
 
@@ -26,11 +26,8 @@ pub struct RayTrace {
     position: Vec3,
     theta: f32,
     phi: f32,
-    instance: Instance,
-    adapter: Adapter,
     device: Device,
     queue: Queue,
-    shader: ShaderModule,
     pipeline: ComputePipeline,
     pub bvh: Bvh<f32, 3>,
     pub first_render: bool,
@@ -79,11 +76,8 @@ impl RayTrace {
             position,
             theta,
             phi,
-            instance,
-            adapter,
             device,
             queue,
-            shader,
             pipeline,
             bvh,
             first_render: true,
@@ -308,8 +302,8 @@ impl Widget for &RayTrace {
                     for ray_x_index in 0..character_x_resolution {
                         let ray_x_offset = ray_x_index as f32 * pixel_spacing_x;
 
-                        let ray_x = ray_x_base + ray_x_offset as f32;
-                        let ray_y = ray_y_base + ray_y_offset as f32;
+                        let ray_x = ray_x_base + ray_x_offset;
+                        let ray_y = ray_y_base + ray_y_offset;
 
                         rays_data.push(
                             transformation_matrix.transform_vector3a(vec3a(ray_x, ray_y, -depth)),
@@ -329,16 +323,21 @@ impl Widget for &RayTrace {
 
         debug!("rays made {:?}", Utc::now());
 
-        let flat_bvh = self.bvh.flatten().into_iter().map(|node| FlatBVHNode {
-            aabb: AABB {
-                min: vec3a(node.aabb.min.x, node.aabb.min.y, node.aabb.min.z),
-                max: vec3a(node.aabb.max.x, node.aabb.max.y, node.aabb.max.z),
-            },
-            entry_index: node.entry_index,
-            exit_index: node.exit_index,
-            shape_index: node.shape_index,
-            _pad: 0,
-        }).collect::<Vec<_>>();
+        let flat_bvh = self
+            .bvh
+            .flatten()
+            .into_iter()
+            .map(|node| FlatBVHNode {
+                aabb: AABB {
+                    min: vec3a(node.aabb.min.x, node.aabb.min.y, node.aabb.min.z),
+                    max: vec3a(node.aabb.max.x, node.aabb.max.y, node.aabb.max.z),
+                },
+                entry_index: node.entry_index,
+                exit_index: node.exit_index,
+                shape_index: node.shape_index,
+                _pad: 0,
+            })
+            .collect::<Vec<_>>();
 
         let bvh_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
             label: Some("bvh"),
@@ -483,9 +482,7 @@ impl Widget for &RayTrace {
                 .x_bounds([left as f64, right as f64])
                 .y_bounds([down as f64, up as f64])
                 .paint(|context| {
-                    for (index, (intersection, screen_vec)) in
-                        intersections.iter().zip(screen_vecs.iter()).enumerate()
-                    {
+                    for (intersection, screen_vec) in intersections.iter().zip(screen_vecs.iter()) {
                         let normalized_distance = E.powf(-0.01 * intersection.distance.powi(2));
 
                         if random_bool(normalized_distance as f64) {
@@ -582,7 +579,7 @@ impl Cell {
         &self,
         ray_trace: &RayTrace,
         world: &World,
-        screen: &Screen,
+        _screen: &Screen,
     ) -> Vec<Intersection> {
         let vertical_planes = ray_trace.vertical_planes();
         let horizontal_planes = ray_trace.horizontal_planes();
@@ -757,6 +754,8 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
+    use glam::vec3;
+
     use super::*;
 
     #[test]

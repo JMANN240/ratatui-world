@@ -99,8 +99,7 @@ mod tests {
 
     #[test]
     fn test_plane_constructors() {
-        let offset_x_y_plane =
-            Plane::from_points(Vec3::Z, Vec3::X + Vec3::Z, Vec3::Y + Vec3::Z);
+        let offset_x_y_plane = Plane::from_points(Vec3::Z, Vec3::X + Vec3::Z, Vec3::Y + Vec3::Z);
 
         assert_eq!(
             Plane::from_point_and_vectors(Vec3::ONE, Vec3::X, Vec3::Y),

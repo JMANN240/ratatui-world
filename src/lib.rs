@@ -26,7 +26,7 @@ pub fn moller_trumbore_intersection(
     let inv_det = 1.0 / det;
     let s = origin - triangle[0];
     let u = inv_det * s.dot(ray_cross_e2);
-    if u < 0.0 || u > 1.0 {
+    if !(0.0..=1.0).contains(&u) {
         return None;
     }
 
@@ -38,12 +38,5 @@ pub fn moller_trumbore_intersection(
     // At this stage we can compute t to find out where the intersection point is on the line.
     let t = inv_det * e2.dot(s_cross_e1);
 
-    if t > f32::EPSILON {
-        // ray intersection
-        let intersection_point = origin + direction * t;
-        return Some(intersection_point);
-    } else {
-        // This means that there is a line intersection but not a ray intersection.
-        return None;
-    }
+    (t > f32::EPSILON).then_some(origin + direction * t)
 }

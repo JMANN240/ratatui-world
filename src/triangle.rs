@@ -129,7 +129,7 @@ impl ColoredTriangle {
     }
 
     pub fn points(&self) -> &[Vec3; 3] {
-        &self.triangle.points()
+        self.triangle.points()
     }
 
     pub fn points_mut(&mut self) -> &mut [Vec3; 3] {
@@ -154,13 +154,8 @@ impl ColoredTriangle {
             .map(|point| partition_index(planes, *point))
             .collect::<Option<Vec<usize>>>()?;
 
-        let Some(min) = partition_indices.iter().min() else {
-            return None;
-        };
-
-        let Some(max) = partition_indices.iter().max() else {
-            return None;
-        };
+        let min = partition_indices.iter().min()?;
+        let max = partition_indices.iter().max()?;
 
         Some((*min, *max))
     }
