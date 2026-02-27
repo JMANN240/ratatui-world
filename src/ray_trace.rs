@@ -1,6 +1,5 @@
 use std::f32::consts::E;
 
-use crate::{moller_trumbore_intersection, plane::Plane};
 use bvh::bvh::Bvh;
 use bytemuck::{Pod, Zeroable};
 use chrono::Utc;
@@ -9,7 +8,6 @@ use glam::{Mat4, Quat, U16Vec2, Vec3, Vec3A, vec2, vec3a};
 use rand::random_bool;
 use ratatui_core::{buffer::Buffer, layout::Rect, style::Color, symbols::Marker, widgets::Widget};
 use ratatui_widgets::canvas::{Canvas, Points};
-use rayon::prelude::*;
 use tracing::debug;
 use wgpu::{
     ComputePipeline, Device, Queue,
@@ -92,46 +90,6 @@ impl RayTrace {
         self.fov_y * self.aspect_ratio
     }
 
-    pub fn untransformed_left_side_vector(&self) -> Vec3 {
-        Vec3::NEG_Z.rotate_y(self.fov_x() / 2.0)
-    }
-
-    pub fn untransformed_right_side_vector(&self) -> Vec3 {
-        Vec3::NEG_Z.rotate_y(-self.fov_x() / 2.0)
-    }
-
-    pub fn untransformed_top_side_vector(&self) -> Vec3 {
-        Vec3::NEG_Z.rotate_x(self.fov_y / 2.0)
-    }
-
-    pub fn untransformed_bottom_side_vector(&self) -> Vec3 {
-        Vec3::NEG_Z.rotate_x(-self.fov_y / 2.0)
-    }
-
-    pub fn left_side_vector(&self) -> Vec3 {
-        self.untransformed_left_side_vector()
-            .rotate_x(self.phi())
-            .rotate_y(self.theta())
-    }
-
-    pub fn right_side_vector(&self) -> Vec3 {
-        self.untransformed_right_side_vector()
-            .rotate_x(self.phi())
-            .rotate_y(self.theta())
-    }
-
-    pub fn top_side_vector(&self) -> Vec3 {
-        self.untransformed_top_side_vector()
-            .rotate_x(self.phi())
-            .rotate_y(self.theta())
-    }
-
-    pub fn bottom_side_vector(&self) -> Vec3 {
-        self.untransformed_bottom_side_vector()
-            .rotate_x(self.phi())
-            .rotate_y(self.theta())
-    }
-
     pub fn depth(&self, resolution_y: usize) -> f32 {
         let scale = (resolution_y as f32 / 2.0) / (self.fov_y / 2.0).sin();
 
@@ -190,24 +148,6 @@ impl RayTrace {
         self.transformation_matrix()
             .inverse()
             .transform_point3(world_point)
-    }
-
-    pub fn vertical_planes(&self) -> Vec<Plane> {
-        Plane::between_vectors(
-            5,
-            self.position(),
-            self.left_side_vector(),
-            self.right_side_vector(),
-        )
-    }
-
-    pub fn horizontal_planes(&self) -> Vec<Plane> {
-        Plane::between_vectors(
-            5,
-            self.position(),
-            self.bottom_side_vector(),
-            self.top_side_vector(),
-        )
     }
 }
 
@@ -469,7 +409,7 @@ impl Widget for &RayTrace {
             let output_data = temp_buffer.get_mapped_range(..);
 
             debug!("mapping6 {:?}", Utc::now());
-            let intersections: &[DumbIntersection] = bytemuck::cast_slice(&output_data);
+            let intersections: &[Intersection] = bytemuck::cast_slice(&output_data);
 
             debug!("mapped {:?}", Utc::now());
 
@@ -538,7 +478,7 @@ pub struct Triangle {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
-pub struct DumbIntersection {
+pub struct Intersection {
     distance: f32,
     color: Rgb,
 }
@@ -558,229 +498,4 @@ pub struct FlatBVHNode {
     exit_index: u32,
     shape_index: u32,
     _pad: u32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Cell {
-    coords: U16Vec2,
-    rays: Vec<Ray>,
-}
-
-impl Cell {
-    pub fn new(coords: U16Vec2, rays: Vec<Ray>) -> Self {
-        Self { coords, rays }
-    }
-
-    pub fn get_intersections(
-        &self,
-        ray_trace: &RayTrace,
-        world: &World,
-        _screen: &Screen,
-    ) -> Vec<Intersection> {
-        let vertical_planes = ray_trace.vertical_planes();
-        let horizontal_planes = ray_trace.horizontal_planes();
-
-        let triangle_vertical_partition_indices = world
-            .triangles()
-            .par_bridge()
-            .map(|triangle| triangle.partition_indices(&vertical_planes))
-            .collect::<Vec<_>>();
-
-        let triangle_horizontal_partition_indices = world
-            .triangles()
-            .par_bridge()
-            .map(|triangle| triangle.partition_indices(&horizontal_planes))
-            .collect::<Vec<_>>();
-
-        let mut ray_triangle_intersections = self
-            .rays
-            .iter()
-            .filter_map(|ray| {
-                let maybe_ray_vertical_plane_partition_index =
-                    ray.partition_index(&vertical_planes);
-                let maybe_ray_horizontal_plane_partition_index =
-                    ray.partition_index(&horizontal_planes);
-
-                world
-                    .triangles()
-                    .enumerate()
-                    .filter_map(|(index, triangle)| {
-                        let maybe_triangle_vertical_plane_partition_indices =
-                            triangle_vertical_partition_indices.get(index).unwrap();
-                        let maybe_triangle_horizontal_plane_partition_indices =
-                            triangle_horizontal_partition_indices.get(index).unwrap();
-
-                        let ray_might_vertically_intersect_triangle =
-                            maybe_ray_vertical_plane_partition_index.is_none_or(
-                                |ray_vertical_plane_partition_index| {
-                                    maybe_triangle_vertical_plane_partition_indices.is_none_or(
-                                        |(
-                                            lower_triangle_vertical_plane_partition_index,
-                                            upper_triangle_vertical_plane_partition_index,
-                                        )| {
-                                            ray_vertical_plane_partition_index
-                                                >= lower_triangle_vertical_plane_partition_index
-                                                && ray_vertical_plane_partition_index
-                                                    <= upper_triangle_vertical_plane_partition_index
-                                        },
-                                    )
-                                },
-                            );
-
-                        let ray_might_horizontally_intersect_triangle =
-                            maybe_ray_horizontal_plane_partition_index.is_none_or(
-                                |ray_horizontal_plane_partition_index| {
-                                    maybe_triangle_horizontal_plane_partition_indices.is_none_or(
-                                        |(
-                                            lower_triangle_horizontal_plane_partition_index,
-                                            upper_triangle_horizontal_plane_partition_index,
-                                        )| {
-                                            ray_horizontal_plane_partition_index
-                                                >= lower_triangle_horizontal_plane_partition_index
-                                                && ray_horizontal_plane_partition_index
-                                                    <= upper_triangle_horizontal_plane_partition_index
-                                        },
-                                    )
-                                },
-                            );
-
-                        let ray_might_intersect_triangle = ray_might_vertically_intersect_triangle && ray_might_horizontally_intersect_triangle;
-
-                        if ray_might_intersect_triangle {
-                            moller_trumbore_intersection(
-                                ray_trace.position(),
-                                ray.world_vector(),
-                                *triangle.points(),
-                            )
-                            .map(|intersection| Intersection {
-                                ray: *ray,
-                                triangle,
-                                intersection,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .min_by(|l, r| {
-                        (ray_trace.position() - l.intersection())
-                            .length()
-                            .partial_cmp(&(ray_trace.position() - r.intersection()).length())
-                            .unwrap()
-                    })
-            })
-            .collect::<Vec<_>>();
-
-        ray_triangle_intersections.sort_by(|l, r| {
-            (ray_trace.position() - r.intersection())
-                .length()
-                .partial_cmp(&(ray_trace.position() - l.intersection()).length())
-                .unwrap()
-        });
-
-        ray_triangle_intersections
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Intersection {
-    ray: Ray,
-    triangle: ColoredTriangle,
-    intersection: Vec3,
-}
-
-impl Intersection {
-    pub fn ray(&self) -> Ray {
-        self.ray
-    }
-
-    pub fn triangle(&self) -> ColoredTriangle {
-        self.triangle
-    }
-
-    pub fn intersection(&self) -> Vec3 {
-        self.intersection
-    }
-}
-
-pub struct Screen {
-    left: f32,
-    right: f32,
-    up: f32,
-    down: f32,
-    width: f32,
-    height: f32,
-}
-
-impl Screen {
-    pub fn new(left: f32, right: f32, up: f32, down: f32) -> Self {
-        Screen {
-            left,
-            right,
-            up,
-            down,
-            width: right - left,
-            height: up - down,
-        }
-    }
-
-    pub fn left(&self) -> f32 {
-        self.left
-    }
-
-    pub fn right(&self) -> f32 {
-        self.right
-    }
-
-    pub fn up(&self) -> f32 {
-        self.up
-    }
-
-    pub fn down(&self) -> f32 {
-        self.down
-    }
-
-    pub fn width(&self) -> f32 {
-        self.width
-    }
-
-    pub fn height(&self) -> f32 {
-        self.height
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use glam::vec3;
-
-    use super::*;
-
-    #[test]
-    fn test_moller_trumbore() {
-        let position = Vec3::ZERO;
-        let direction = Vec3::NEG_Z;
-        let triangle = [
-            vec3(-1.0, -1.0, -2.0),
-            vec3(0.0, 1.0, -2.0),
-            vec3(1.0, -1.0, -2.0),
-        ];
-
-        assert_eq!(
-            moller_trumbore_intersection(position, direction, triangle),
-            Some(vec3(0.0, 0.0, -2.0))
-        );
-
-        let position = vec3(0.0, 0.0, 10.0);
-
-        assert_eq!(
-            moller_trumbore_intersection(position, direction, triangle),
-            Some(vec3(0.0, 0.0, -2.0))
-        );
-
-        let position = vec3(0.0, 0.0, -10.0);
-
-        assert_eq!(
-            moller_trumbore_intersection(position, direction, triangle),
-            None
-        );
-    }
 }
