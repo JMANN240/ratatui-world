@@ -73,11 +73,11 @@ struct Color {
 fn main(
     @builtin(global_invocation_id) id: vec3<u32>
 ) {
-    let index = id.x + id.y * params.width;
-
     if id.x >= params.width || id.y >= params.height {
         return;
     }
+
+    let index = id.x + id.y * params.width;
 
     let ray = ray_from_origin_and_direction(camera.position, rays[index]);
 
