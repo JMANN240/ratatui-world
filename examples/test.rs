@@ -31,7 +31,9 @@ pub struct App {
     t: f32,
     camera: RayTrace,
     exit: bool,
-    render_depth: f32,
+    target_position: Vec3,
+    target_theta: f32,
+    target_phi: f32,
 }
 
 impl App {
@@ -71,7 +73,9 @@ impl App {
             )
             .await,
             exit: bool::default(),
-            render_depth: 10.0,
+            target_position: Vec3::default(),
+            target_theta: f32::default(),
+            target_phi: f32::default(),
         }
     }
 
@@ -118,30 +122,24 @@ impl App {
 
         self.camera.bvh = Bvh::build(shapes.as_mut_slice());
 
+        self.camera.set_position(self.camera.position() + (self.target_position - self.camera.position()) * 0.1);
+        self.camera.set_theta(self.camera.theta() + (self.target_theta - self.camera.theta()) * 0.1);
+        self.camera.set_phi(self.camera.phi() + (self.target_phi - self.camera.phi()) * 0.1);
+
         Ok(())
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => self.exit(),
-            KeyCode::Left => self.camera.set_theta(self.camera.theta() + TAU / 24.0),
-            KeyCode::Right => self.camera.set_theta(self.camera.theta() - TAU / 24.0),
-            KeyCode::Up => self.camera.set_phi(self.camera.phi() + TAU / 24.0),
-            KeyCode::Down => self.camera.set_phi(self.camera.phi() - TAU / 24.0),
-            KeyCode::Char('w') => self
-                .camera
-                .set_position(self.camera.position() + self.camera.facing()),
-            KeyCode::Char('a') => self
-                .camera
-                .set_position(self.camera.position() - self.camera.right()),
-            KeyCode::Char('s') => self
-                .camera
-                .set_position(self.camera.position() - self.camera.facing()),
-            KeyCode::Char('d') => self
-                .camera
-                .set_position(self.camera.position() + self.camera.right()),
-            KeyCode::Char('q') => self.render_depth -= 0.5,
-            KeyCode::Char('e') => self.render_depth += 0.5,
+            KeyCode::Left => self.target_theta = self.target_theta + TAU / 16.0,
+            KeyCode::Right => self.target_theta = self.target_theta - TAU / 16.0,
+            KeyCode::Up => self.target_phi = self.target_phi + TAU / 32.0,
+            KeyCode::Down => self.target_phi = self.target_phi - TAU / 32.0,
+            KeyCode::Char('w') => self.target_position = self.target_position + self.camera.facing(),
+            KeyCode::Char('a') => self.target_position = self.target_position - self.camera.right(),
+            KeyCode::Char('s') => self.target_position = self.target_position - self.camera.facing(),
+            KeyCode::Char('d') => self.target_position = self.target_position + self.camera.right(),
             _ => {}
         }
     }
