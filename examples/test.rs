@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use bvh::bvh::Bvh;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use glam::{Affine3, Quat, Vec3};
 use ratatui::{DefaultTerminal, Frame, widgets::Widget};
@@ -46,7 +45,7 @@ impl App {
         let monkey = Shape3D::from_gltf(
             monkey_document,
             monkey_buffers,
-            Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::ZERO),
+            Affine3::from_scale_rotation_translation(Vec3::ONE, Quat::IDENTITY, Vec3::NEG_Z * 4.0),
         );
 
         let room = Shape3D::from_gltf(
@@ -105,22 +104,17 @@ impl App {
 
         let world = self.camera.world_mut();
 
-        // world
-        //     .shapes_mut()
-        //     .entry(String::from("monkey"))
-        //     .and_modify(|shape| {
-        //         shape.set_transform(Affine3::from_rotation_translation(
-        //             Quat::from_rotation_y(self.t * 4.0),
-        //             Vec3::NEG_Z * 4.0 + 0.1 * Vec3::Y * (self.t * 7.0).sin(),
-        //         ))
-        //     });
+        world
+            .shapes_mut()
+            .entry(String::from("monkey"))
+            .and_modify(|shape| {
+                shape.set_transform(Affine3::from_rotation_translation(
+                    Quat::from_rotation_y(self.t * 4.0),
+                    Vec3::NEG_Z * 4.0 + 0.1 * Vec3::Y * (self.t * 7.0).sin(),
+                ))
+            });
 
-        let mut shapes = world
-            .triangles_mut()
-            .map(|triangle| triangle.inner_mut())
-            .collect::<Vec<_>>();
-
-        self.camera.bvh = Bvh::build(shapes.as_mut_slice());
+        self.camera.update_bvh();
 
         self.camera.set_position(self.camera.position() + (self.target_position - self.camera.position()) * 0.1);
         self.camera.set_theta(self.camera.theta() + (self.target_theta - self.camera.theta()) * 0.1);

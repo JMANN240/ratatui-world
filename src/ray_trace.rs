@@ -1,4 +1,4 @@
-use std::f32::consts::E;
+use std::{f32::consts::E, rc::Rc};
 
 use bvh::bvh::Bvh;
 use bytemuck::{Pod, Zeroable};
@@ -14,9 +14,9 @@ use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
 };
 
-use crate::{ray::Ray, triangle::ColoredTriangle, world::World};
+use crate::world::World;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RayTrace {
     world: World,
     aspect_ratio: f32,
@@ -29,6 +29,7 @@ pub struct RayTrace {
     pipeline: ComputePipeline,
     pub bvh: Bvh<f32, 3>,
     pub first_render: bool,
+    distance_normalization_function: Rc<dyn Fn(f32) -> f32>,
 }
 
 impl RayTrace {
@@ -61,8 +62,8 @@ impl RayTrace {
         });
 
         let mut shapes = world
-            .triangles_mut()
-            .map(|triangle| triangle.inner_mut())
+            .triangles()
+            .map(|triangle| triangle.inner())
             .collect::<Vec<_>>();
 
         let bvh = Bvh::build(shapes.as_mut_slice());
@@ -79,7 +80,17 @@ impl RayTrace {
             pipeline,
             bvh,
             first_render: true,
+            distance_normalization_function: Rc::new(|distance| 1.0 - E.powf(-0.01 * distance.powi(2)))
         }
+    }
+
+    pub fn update_bvh(&mut self) {
+        let mut shapes = self.world
+            .triangles()
+            .map(|triangle| triangle.inner())
+            .collect::<Vec<_>>();
+
+        self.bvh = Bvh::build(shapes.as_mut_slice());
     }
 
     pub fn world_mut(&mut self) -> &mut World {
@@ -156,50 +167,36 @@ impl Widget for &RayTrace {
     where
         Self: Sized,
     {
-        debug!("start {:?}", Utc::now());
-        let character_x_resolution = 2; // how many subpixels there are along the width of a character
-        let character_y_resolution = 4; // how many subpixels there are along the height of a character
+        let character_x_resolution = 2;
+        let character_y_resolution = 4;
 
-        // lets say that the canvas is 60 characters wide and 60 characters tall
-
-        let resolution_x = area.width * character_x_resolution; // 60 * 2 = 120 for quadrant
-        let resolution_y = area.height * character_y_resolution; // 60 * 2 = 120 for quadrant
-
-        // so we really have 120 pixels to work with both ways with quadrant
+        let resolution_x = area.width * character_x_resolution;
+        let resolution_y = area.height * character_y_resolution;
 
         let cell_aspect_ratio = 1.0 / 2.0;
-
-        // but the characters are twice as tall as they are width, meaning that the whole "square" canvas is actually a rectangle
 
         let aspect_ratio =
             cell_aspect_ratio * character_y_resolution as f32 / character_x_resolution as f32;
 
-        // So we get the aspect ratio of each pixel
+        let width = resolution_x as f32;
+        let height = (resolution_y as f32) / aspect_ratio;
 
-        // 0.5 * 1 / 1 = 0.5 in the case of a block
-        // 0.5 * 2 / 2 = 0.5 in the case of a quadrant
-        // 0.5 * 4 / 2 = 1.0 in the case of braille
+        let cell_spacing_x = width / (area.width as f32);
+        let cell_spacing_y = height / (area.height as f32);
 
-        let width = resolution_x as f32; // The space on the screen is as wide as there are pixels. 120 for quadrant
-        let height = (resolution_y as f32) / aspect_ratio; // The space on the screen is as tall as there are pixels divided by the AR. 120 / 0.5 = 240 for quadrant
+        let pixel_spacing_x = cell_spacing_x / (character_x_resolution as f32);
+        let pixel_spacing_y = cell_spacing_y / (character_y_resolution as f32);
 
-        let cell_spacing_x = width / (area.width as f32); // For quadrant it is 120 / 60 = 2, so each cell should be 2 apart width-wise
-        let cell_spacing_y = height / (area.height as f32); // For quadrant it is 240 / 60 = 4, so each cell should be 4 apart height-wise
-
-        let pixel_spacing_x = cell_spacing_x / (character_x_resolution as f32); // For quadrant it is 2 / 2 = 1, so each pixel should be 1 apart width-wise
-        let pixel_spacing_y = cell_spacing_y / (character_y_resolution as f32); // For quadrant it is 4 / 2 = 2, so each pixel should be 2 apart height-wise
-
-        let left = -width / 2.0; // -120 / 2 = -60
-        let right = width / 2.0; // 120 / 2 = 60
-        let up = height / 2.0; // 240 / 2 = 120
-        let down = -height / 2.0; // -240 / 2 = -120
+        let left = -width / 2.0;
+        let right = width / 2.0;
+        let up = height / 2.0;
+        let down = -height / 2.0;
 
         let depth = self.depth(resolution_y as usize);
 
         let transformation_matrix =
             Mat4::from_scale_rotation_translation(Vec3::ONE, self.quaternion(), Vec3::ZERO);
 
-        debug!("start buffer stuff {:?}", Utc::now());
         let params = Params {
             width: resolution_x as u32,
             height: resolution_y as u32,
@@ -211,7 +208,6 @@ impl Widget for &RayTrace {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        debug!("params made {:?}", Utc::now());
         let camera = Camera {
             position: self.position(),
             theta: self.theta(),
@@ -225,7 +221,6 @@ impl Widget for &RayTrace {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        debug!("camera made {:?}", Utc::now());
         let mut rays_data = vec![];
         let mut screen_vecs = vec![];
 
@@ -260,8 +255,6 @@ impl Widget for &RayTrace {
             contents: bytemuck::cast_slice(&rays_data),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
         });
-
-        debug!("rays made {:?}", Utc::now());
 
         let flat_bvh = self
             .bvh
@@ -307,7 +300,6 @@ impl Widget for &RayTrace {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
         });
 
-        debug!("truiangles made {:?}", Utc::now());
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("output"),
             size: rays_data.len() as u64 * 16,
@@ -315,7 +307,6 @@ impl Widget for &RayTrace {
             mapped_at_creation: false,
         });
 
-        debug!("output made {:?}", Utc::now());
         let temp_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("temp"),
             size: rays_data.len() as u64 * 16,
@@ -323,8 +314,6 @@ impl Widget for &RayTrace {
             mapped_at_creation: false,
         });
 
-        debug!("temp made {:?}", Utc::now());
-        debug!("start bind group {:?}", Utc::now());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -356,10 +345,8 @@ impl Widget for &RayTrace {
             ],
         });
 
-        debug!("start encoder {:?}", Utc::now());
         let mut encoder = self.device.create_command_encoder(&Default::default());
 
-        debug!("dispatch {:?}", Utc::now());
         {
             let num_x_dispatches = resolution_x.div_ceil(16) as u32;
             let num_y_dispatches = resolution_y.div_ceil(16) as u32;
@@ -369,49 +356,28 @@ impl Widget for &RayTrace {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(num_x_dispatches, num_y_dispatches, 1);
         }
-        debug!("done? {:?}", Utc::now());
 
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &temp_buffer, 0, output_buffer.size());
-        debug!("copied {:?}", Utc::now());
 
         self.queue.submit([encoder.finish()]);
-        debug!("submitted {:?}", Utc::now());
 
-        self.queue.on_submitted_work_done(|| {
-            debug!("on_submitted_work_done {:?}", Utc::now());
-        });
-
-        debug!("mapping {:?}", Utc::now());
         {
-            // The mapping process is async, so we'll need to create a channel to get
-            // the success flag for our mapping
             let (tx, rx) = bounded(1);
 
-            debug!("mapping2 {:?}", Utc::now());
-            // We send the success or failure of our mapping via a callback
             temp_buffer.map_async(wgpu::MapMode::Read, .., move |result| {
                 tx.send(result).unwrap()
             });
 
-            debug!("mapping3 {:?}", Utc::now());
-            // The callback we submitted to map async will only get called after the
-            // device is polled or the queue submitted
             self.device
                 .poll(wgpu::PollType::wait_indefinitely())
                 .unwrap();
 
-            debug!("mapping4 {:?}", Utc::now());
-            // We check if the mapping was successful here
             rx.recv().unwrap().unwrap();
 
-            debug!("mapping5 {:?}", Utc::now());
-            // We then get the bytes that were stored in the buffer
             let output_data = temp_buffer.get_mapped_range(..);
 
-            debug!("mapping6 {:?}", Utc::now());
             let intersections: &[Intersection] = bytemuck::cast_slice(&output_data);
 
-            debug!("mapped {:?}", Utc::now());
 
             let canvas = Canvas::default()
                 .marker(Marker::Braille)
@@ -419,27 +385,25 @@ impl Widget for &RayTrace {
                 .y_bounds([down as f64, up as f64])
                 .paint(|context| {
                     for (intersection, screen_vec) in intersections.iter().zip(screen_vecs.iter()) {
-                        let normalized_distance = E.powf(-0.01 * intersection.distance.powi(2));
+                        let normalized_distance = (self.distance_normalization_function)(intersection.distance);
+                        let draw_probability = 1.0 - normalized_distance;
 
-                        if random_bool(normalized_distance as f64) {
+                        if random_bool(draw_probability as f64) {
                             context.draw(&Points::new(
                                 &[(screen_vec.x as f64, screen_vec.y as f64)],
                                 Color::Rgb(
-                                    (intersection.color.red as f32 * normalized_distance) as u8,
-                                    (intersection.color.green as f32 * normalized_distance) as u8,
-                                    (intersection.color.blue as f32 * normalized_distance) as u8,
+                                    (intersection.color.red as f32 * draw_probability) as u8,
+                                    (intersection.color.green as f32 * draw_probability) as u8,
+                                    (intersection.color.blue as f32 * draw_probability) as u8,
                                 ),
                             ));
                         }
                     }
                 });
 
-            debug!("drawn {:?}", Utc::now());
             canvas.render(area, buf);
-            debug!("rendered {:?}", Utc::now());
         }
 
-        // We need to unmap the buffer to be able to use it again
         temp_buffer.unmap();
     }
 }

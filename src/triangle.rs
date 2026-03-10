@@ -145,17 +145,4 @@ impl ColoredTriangle {
             self.color,
         )
     }
-
-    pub fn partition_indices(&self, planes: &[Plane]) -> Option<(usize, usize)> {
-        let partition_indices = self
-            .points()
-            .iter()
-            .map(|point| partition_index(planes, *point))
-            .collect::<Option<Vec<usize>>>()?;
-
-        let min = partition_indices.iter().min()?;
-        let max = partition_indices.iter().max()?;
-
-        Some((*min, *max))
-    }
 }
